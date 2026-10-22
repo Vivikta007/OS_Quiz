@@ -33,6 +33,7 @@ yarn-error.*
 # env files (secrets)
 .env
 .env*
+!.env.example
 
 # Python
 __pycache__/

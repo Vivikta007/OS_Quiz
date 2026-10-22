@@ -1,194 +1,248 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { router } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  Animated,
+  ActivityIndicator,
   FlatList,
-  Pressable,
+  RefreshControl,
   StyleSheet,
-  Text,
   View,
 } from "react-native";
 
-// persistent data
-// learnt sandboxing and private data isolation
-// App lifecycle and state management
+import { ApiError, apiRequest } from "@/lib/api";
+import { AppText } from "@/ui/AppText";
+import { Button } from "@/ui/Button";
+import { Card } from "@/ui/Card";
+import { Header } from "@/ui/Header";
+import { Screen } from "@/ui/Screen";
+import { StateView } from "@/ui/StateView";
+import { colors, radius, spacing } from "@/ui/theme";
 
-// access the data from AsyncStorage and display it in a list
-// using await because the memory access is asynchronous and we need to
-// wait for it to complete before we can use the data
+// Quiz history lives in Supabase (PostgreSQL), not on the device.
+// The backend only returns the logged-in user's attempts, so history
+// follows the user across devices and survives reinstalling the app.
 
-// The OS can move/manage applications through states such as
-// foreground/background and eventually termination.
-
-type AnswerRecord = {
-  question: string;
-  options: string[];
-  selectedAnswer: string;
-  correctAnswer: string;
-};
-
-type QuizResult = {
+type QuizAttempt = {
+  id: number;
   score: number;
-  total: number;
-  date: string;
-  answers: AnswerRecord[];
+  total_questions: number;
+  topics: string[];
+  difficulty: string;
+  created_at: string;
 };
+
+function scoreColor(percent: number) {
+  if (percent >= 70) return colors.success;
+  if (percent >= 40) return colors.warning;
+  return colors.danger;
+}
+
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 export default function HistoryScreen() {
-  const [history, setHistory] = useState<QuizResult[]>([]);
+  const [history, setHistory] = useState<QuizAttempt[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [openingId, setOpeningId] = useState<number | null>(null);
 
-  const buttonScale = useRef(new Animated.Value(1)).current;
+  const loadHistory = () =>
+    apiRequest("/quiz-attempts", { auth: true })
+      .then((attempts: QuizAttempt[]) => {
+        setHistory(attempts);
+        setError(null);
+      })
+      .catch((loadError) => {
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : "Could not load your quiz history.",
+        );
+      })
+      .finally(() => {
+        setLoading(false);
+        setRefreshing(false);
+      });
 
   useEffect(() => {
     loadHistory();
   }, []);
 
-  const loadHistory = async () => {
-    const savedHistory = await AsyncStorage.getItem("quizHistory");
+  const retry = () => {
+    setLoading(true);
+    loadHistory();
+  };
 
-    if (savedHistory) {
-      const parsedHistory = JSON.parse(savedHistory);
-      setHistory([...parsedHistory].reverse());
+  const refresh = () => {
+    setRefreshing(true);
+    loadHistory();
+  };
+
+  // The list doesn't include answers (keeps it fast), so fetch them on tap
+  const openReview = async (attemptId: number) => {
+    setOpeningId(attemptId);
+
+    try {
+      const attempt = await apiRequest(`/quiz-attempts/${attemptId}`, {
+        auth: true,
+      });
+
+      router.push({
+        pathname: "/review",
+        params: {
+          answers: JSON.stringify(attempt.answers),
+        },
+      });
+    } catch (openError) {
+      if (!(openError instanceof ApiError && openError.status === 401)) {
+        setError(
+          openError instanceof Error
+            ? openError.message
+            : "Could not open this attempt.",
+        );
+      }
+    } finally {
+      setOpeningId(null);
     }
   };
 
-  const animatePress = (pressed: boolean) => {
-    Animated.spring(buttonScale, {
-      toValue: pressed ? 0.96 : 1,
-      useNativeDriver: true,
-      speed: 20,
-      bounciness: 6,
-    }).start();
-  };
+  const header = <Header title="Quiz history" />;
+
+  if (loading) {
+    return (
+      <Screen header={header}>
+        <StateView loading />
+      </Screen>
+    );
+  }
+
+  if (error && history.length === 0) {
+    return (
+      <Screen header={header}>
+        <StateView
+          icon="cloud-offline-outline"
+          tone="danger"
+          title="Couldn't load your history"
+          message={error}
+        >
+          <Button title="Try again" variant="secondary" onPress={retry} />
+        </StateView>
+      </Screen>
+    );
+  }
+
+  if (history.length === 0) {
+    return (
+      <Screen header={header}>
+        <StateView
+          icon="time-outline"
+          title="No quizzes yet"
+          message="Every quiz you finish is saved here, so you can review your answers later."
+        >
+          <Button
+            title="Start a quiz"
+            onPress={() => router.push("/quizInit")}
+          />
+        </StateView>
+      </Screen>
+    );
+  }
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Quiz History</Text>
-
-      {history.length === 0 ? (
-        <Text style={styles.emptyText}>No quiz attempts yet.</Text>
-      ) : (
-        <FlatList
-          data={history}
-          keyExtractor={(_, index) => index.toString()}
-          showsVerticalScrollIndicator={true}
-          contentContainerStyle={styles.list}
-          renderItem={({ item }) => (
-            <Pressable
-              style={styles.historyItem}
-              onPress={() =>
-                router.push({
-                  pathname: "/review",
-                  params: {
-                    answers: JSON.stringify(item.answers),
-                  },
-                })
-              }
-            >
-              <Text style={styles.score}>
-                {item.score} / {item.total}
-              </Text>
-
-              <Text style={styles.date}>
-                {new Date(item.date).toLocaleString()}
-              </Text>
-
-              <Text style={styles.reviewText}>TAP TO REVIEW</Text>
-            </Pressable>
-          )}
-        />
+    <Screen header={header}>
+      {error && (
+        <AppText variant="small" tone="danger" center style={styles.error}>
+          {error}
+        </AppText>
       )}
+      <FlatList
+        data={history}
+        keyExtractor={(item) => item.id.toString()}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.list}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={refresh}
+            tintColor={colors.accent}
+            colors={[colors.accent]}
+            progressBackgroundColor={colors.surface}
+          />
+        }
+        renderItem={({ item }) => {
+          const percent = item.total_questions
+            ? Math.round((item.score / item.total_questions) * 100)
+            : 0;
+          const color = scoreColor(percent);
 
-      <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
-        <Pressable
-          style={styles.button}
-          onPress={() => {
-            if (router.canGoBack()) {
-              router.back();
-            } else {
-              router.replace("/quiz");
-            }
-          }}
-          onPressIn={() => animatePress(true)}
-          onPressOut={() => animatePress(false)}
-        >
-          <Text style={styles.buttonText}>BACK</Text>
-        </Pressable>
-      </Animated.View>
-    </View>
+          return (
+            <Card
+              onPress={() => openReview(item.id)}
+              accessibilityLabel={`${item.score} of ${item.total_questions}, ${item.difficulty}. Open review`}
+              style={styles.item}
+            >
+              <View style={[styles.badge, { borderColor: color }]}>
+                <AppText variant="bodyStrong" style={{ color }}>
+                  {percent}%
+                </AppText>
+              </View>
+
+              <View style={styles.itemText}>
+                <AppText variant="bodyStrong">
+                  {item.score} / {item.total_questions} correct
+                </AppText>
+                <AppText variant="small" tone="accent" numberOfLines={1}>
+                  {item.difficulty} · {item.topics.join(", ")}
+                </AppText>
+                <AppText variant="caption" tone="muted">
+                  {formatDate(item.created_at)}
+                </AppText>
+              </View>
+
+              {openingId === item.id ? (
+                <ActivityIndicator size="small" color={colors.accent} />
+              ) : (
+                <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+              )}
+            </Card>
+          );
+        }}
+      />
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#0B1220",
-    paddingHorizontal: 20,
-    paddingTop: 55,
-    paddingBottom: 55,
+  error: {
+    marginBottom: spacing.sm,
   },
-
-  title: {
-    fontSize: 30,
-    fontWeight: "bold",
-    color: "#FFFFFF",
-    marginBottom: 25,
-    textAlign: "center",
-  },
-
-  emptyText: {
-    color: "#A8B3C7",
-    fontSize: 17,
-    textAlign: "center",
-    marginTop: 30,
-  },
-
   list: {
-    paddingBottom: 10,
+    gap: spacing.md,
+    paddingBottom: spacing.xxl,
   },
-
-  historyItem: {
-    backgroundColor: "#17233A",
-    padding: 18,
-    borderRadius: 14,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: "#263653",
+  item: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
   },
-
-  score: {
-    color: "#FFFFFF",
-    fontSize: 22,
-    fontWeight: "bold",
-  },
-
-  date: {
-    color: "#A8B3C7",
-    fontSize: 14,
-    marginTop: 6,
-  },
-
-  reviewText: {
-    color: "#3B82F6",
-    fontSize: 12,
-    fontWeight: "bold",
-    letterSpacing: 1,
-    marginTop: 12,
-  },
-
-  button: {
+  badge: {
+    width: 56,
     height: 56,
-    borderRadius: 14,
+    borderRadius: radius.pill,
+    borderWidth: 2,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#3B82F6",
   },
-
-  buttonText: {
-    color: "#FFFFFF",
-    fontSize: 15,
-    fontWeight: "bold",
-    letterSpacing: 1,
+  itemText: {
+    flex: 1,
+    gap: 2,
   },
 });

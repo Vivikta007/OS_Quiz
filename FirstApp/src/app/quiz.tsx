@@ -1,43 +1,61 @@
-import { questions } from "@/data/questions";
-
-import AsyncStorage from "@react-native-async-storage/async-storage";
-
-import { router, useLocalSearchParams } from "expo-router";
-
-import { useEffect, useRef, useState } from "react";
-
+import Ionicons from "@expo/vector-icons/Ionicons";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  Animated,
+  AppState,
   BackHandler,
   Modal,
   Pressable,
   StyleSheet,
-  Text,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
-// SHUFFLE
+import { showAlert } from "@/lib/alert";
+import { apiRequest } from "@/lib/api";
+import { goBack, goHome } from "@/lib/navigation";
+import { AppText } from "@/ui/AppText";
+import { Button } from "@/ui/Button";
+import { ConfirmDialog } from "@/ui/ConfirmDialog";
+import { IconButton } from "@/ui/Header";
+import { selectHaptic, successHaptic, warningHaptic } from "@/ui/haptics";
+import { Screen } from "@/ui/Screen";
+import { colors, layout, radius, spacing } from "@/ui/theme";
 
-function shuffleArray<T>(array: T[]): T[] {
-  const shuffled = [...array];
+// A random ID for this quiz attempt. If saving is retried after a network
+// error, the server sees the same ID and won't save the quiz twice.
 
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-
-  return shuffled;
+function createAttemptId(): string {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => {
+    const random = Math.floor(Math.random() * 16);
+    const value = char === "x" ? random : (random % 4) + 8;
+    return value.toString(16);
+  });
 }
 
 // TYPES
 
-type AnswerRecord = {
+// A question from GET /quiz-questions. The server never sends the correct
+// answer, so it can't be read from the app or its network traffic.
+type QuizQuestion = {
+  id: number;
   question: string;
   options: string[];
-  selectedAnswer: string;
-  correctAnswer: string;
+  topic: string;
+  difficulty: string;
+};
+
+// The marked result from POST /quiz-attempts (used by Score and Review)
+type QuizAttemptResult = {
+  score: number;
+  total_questions: number;
+  answers: {
+    question: string;
+    options: string[];
+    selectedAnswer: string;
+    correctAnswer: string;
+  }[];
 };
 
 type QuestionState = {
@@ -62,7 +80,9 @@ export default function QuizScreen() {
 
   const [questionStates, setQuestionStates] = useState<QuestionState[]>([]);
 
-  const [quizQuestions, setQuizQuestions] = useState<typeof questions>([]);
+  const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
+
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const [showPalette, setShowPalette] = useState(false);
 
@@ -72,125 +92,97 @@ export default function QuizScreen() {
 
   const [showExitInterrupt, setShowExitInterrupt] = useState(false);
 
-  // BUTTON ANIMATIONS
+  // One ID per quiz; restarting the quiz mounts a new screen with a new ID.
+  const [attemptId] = useState(createAttemptId);
 
-  const nextScale = useRef(new Animated.Value(1)).current;
-
-  const paletteScale = useRef(new Animated.Value(1)).current;
-
-  // PRESS ANIMATION
-
-  const animatePress = (scale: Animated.Value, pressed: boolean) => {
-    Animated.spring(scale, {
-      toValue: pressed ? 0.96 : 1,
-      useNativeDriver: true,
-      speed: 20,
-      bounciness: 6,
-    }).start();
-  };
-
-  // INITIALIZE QUIZ
+  // LOAD QUESTIONS FROM THE SERVER
+  // The backend picks random questions for the chosen topics and difficulty
+  // from the database (Adaptive = a mix of Easy, Medium and Hard) and
+  // shuffles their options.
 
   useEffect(() => {
-    let selectedTopics: string[] = [];
+    let cancelled = false;
 
-    try {
-      selectedTopics = topics ? JSON.parse(topics) : [];
-    } catch {
-      selectedTopics = [];
+    async function loadQuestions() {
+      let selectedTopics: string[] = [];
+
+      try {
+        selectedTopics = topics ? JSON.parse(topics) : [];
+      } catch {
+        selectedTopics = [];
+      }
+
+      // e.g. /quiz-questions?topics=Deadlocks&topics=File%20Systems&difficulty=Easy&count=10
+      const query = [
+        ...selectedTopics.map((topic) => `topics=${encodeURIComponent(topic)}`),
+        `difficulty=${encodeURIComponent(difficulty ?? "")}`,
+        `count=${encodeURIComponent(questionCount ?? "10")}`,
+      ].join("&");
+
+      try {
+        const loaded: QuizQuestion[] = await apiRequest(
+          `/quiz-questions?${query}`,
+          { auth: true },
+        );
+
+        if (cancelled) return;
+
+        setQuizQuestions(loaded);
+
+        // CREATE STATE FOR EACH QUESTION
+
+        setQuestionStates(
+          loaded.map(() => ({
+            selectedAnswer: null,
+            visited: false,
+          })),
+        );
+      } catch (error) {
+        if (!cancelled) {
+          setLoadError(
+            error instanceof Error ? error.message : "Could not load questions.",
+          );
+        }
+      }
     }
 
-    // STEP 1: FILTER BY TOPIC
+    loadQuestions();
 
-    let filteredQuestions = questions.filter((question) => {
-      return selectedTopics.includes(question.topic);
-    });
+    return () => {
+      cancelled = true;
+    };
+  }, [topics, difficulty, questionCount]);
 
-    // STEP 2: FILTER BY DIFFICULTY
+  // PAUSE WHEN THE APP GOES TO THE BACKGROUND (App lifecycle / AppState)
+  // The OS moves apps between states: active (on screen) -> background
+  // (another app in front) -> active again. When the user returns to an
+  // unfinished quiz, show the "Quiz Paused" screen on top of it.
+  //
+  // This lives in the quiz screen (not the whole app), so it only runs while
+  // a quiz is really in progress: questions loaded, not submitting, and the
+  // quiz screen in focus (useFocusEffect stops it while Paused is showing).
 
-    if (difficulty !== "Adaptive") {
-      filteredQuestions = filteredQuestions.filter(
-        (question) => question.difficulty === difficulty,
-      );
-    }
+  const quizInProgress = quizQuestions.length > 0 && !isSubmitting;
 
-    // STEP 3: ADAPTIVE MODE
+  useFocusEffect(
+    useCallback(() => {
+      if (!quizInProgress) return;
 
-    /*
-      For now Adaptive mode creates a mixed-difficulty quiz.
+      let previousState = AppState.currentState;
 
-      Later, this is where we can use:
-      - previous scores
-      - weak topics
-      - strong topics
-      - previous attempts
-      - LLM-generated questions
-    */
+      const subscription = AppState.addEventListener("change", (nextState) => {
+        if (previousState === "background" && nextState === "active") {
+          router.push("/paused");
+        }
 
-    if (difficulty === "Adaptive") {
-      const easyQuestions = filteredQuestions.filter(
-        (question) => question.difficulty === "Easy",
-      );
-
-      const mediumQuestions = filteredQuestions.filter(
-        (question) => question.difficulty === "Medium",
-      );
-
-      const hardQuestions = filteredQuestions.filter(
-        (question) => question.difficulty === "Hard",
-      );
-
-      const adaptivePool = shuffleArray([
-        ...shuffleArray(easyQuestions).slice(0, 4),
-        ...shuffleArray(mediumQuestions).slice(0, 4),
-        ...shuffleArray(hardQuestions).slice(0, 4),
-      ]);
-
-      filteredQuestions = adaptivePool;
-    }
-
-    // STEP 4: SHUFFLE
-
-    filteredQuestions = shuffleArray(filteredQuestions);
-
-    // STEP 5: SELECT 10 QUESTIONS
-
-    const selectedQuestions = filteredQuestions
-      .slice(0, parseInt(questionCount ?? "10") || 10)
-      .map((question) => {
-        const correctIndex = question.correctAnswer.charCodeAt(0) - 65;
-
-        const correctOption = question.options[correctIndex];
-
-        // Shuffle options while keeping correct answer correct
-        const shuffledOptions = shuffleArray(question.options);
-
-        return {
-          ...question,
-          options: shuffledOptions,
-          correctAnswer: correctOption,
-        };
+        previousState = nextState;
       });
 
-    // FALLBACK
-
-    if (selectedQuestions.length === 0) {
-      return;
-    }
-
-    // SAVE QUESTIONS
-
-    setQuizQuestions(selectedQuestions);
-
-    // CREATE STATE FOR EACH QUESTION
-
-    setQuestionStates(
-      selectedQuestions.map(() => ({
-        selectedAnswer: null,
-        visited: false,
-      })),
-    );
-  }, [topics, difficulty, questionCount]);
+      return () => {
+        subscription.remove();
+      };
+    }, [quizInProgress]),
+  );
 
   // ANDROID BACK BUTTON
 
@@ -202,6 +194,7 @@ export default function QuizScreen() {
         return true;
       }
 
+      warningHaptic();
       setShowExitInterrupt(true);
 
       return true;
@@ -234,70 +227,64 @@ export default function QuizScreen() {
 
     setIsSubmitting(true);
 
-    // CREATE FINAL ANSWERS
+    // WHAT THE USER PICKED (the server marks it - the app has no answers)
 
-    const finalAnswers: AnswerRecord[] = quizQuestions.map(
-      (quizQuestion, index) => ({
-        question: quizQuestion.question,
+    const submittedAnswers = quizQuestions.map((quizQuestion, index) => ({
+      question_id: quizQuestion.id,
+      options: quizQuestion.options,
+      selected_answer: questionStates[index]?.selectedAnswer ?? "",
+    }));
 
-        options: quizQuestion.options,
+    let selectedTopics: string[] = [];
 
-        selectedAnswer: questionStates[index]?.selectedAnswer ?? "",
+    try {
+      selectedTopics = topics ? JSON.parse(topics) : [];
+    } catch {
+      selectedTopics = [];
+    }
 
-        correctAnswer: quizQuestion.correctAnswer,
-      }),
-    );
+    // SEND TO THE SERVER, WHICH MARKS AND SAVES THE QUIZ
 
-    // CALCULATE SCORE
+    let attempt: QuizAttemptResult;
 
-    const finalScore = questionStates.reduce(
-      (total, state, index) => {
-        return state.selectedAnswer === quizQuestions[index].correctAnswer
-          ? total + 1
-          : total;
-      },
+    try {
+      attempt = await apiRequest("/quiz-attempts", {
+        method: "POST",
+        auth: true,
+        body: {
+          client_attempt_id: attemptId,
+          topics: selectedTopics,
+          difficulty,
+          answers: submittedAnswers,
+        },
+      });
+    } catch (error) {
+      setIsSubmitting(false);
 
-      0,
-    );
+      const message =
+        error instanceof Error ? error.message : "Something went wrong.";
 
-    // CREATE RESULT OBJECT
+      showAlert("Could not save your quiz", message, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Retry", onPress: () => submitQuiz() },
+      ]);
 
-    const result = {
-      score: finalScore,
-
-      total: quizQuestions.length,
-
-      date: new Date().toISOString(),
-
-      answers: finalAnswers,
-    };
-
-    // SHOW LOADING FOR 3 SECONDS
-
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-
-    // SAVE TO HISTORY
-
-    const existingHistory = await AsyncStorage.getItem("quizHistory");
-
-    const history = existingHistory ? JSON.parse(existingHistory) : [];
-
-    history.push(result);
-
-    await AsyncStorage.setItem("quizHistory", JSON.stringify(history));
+      return;
+    }
 
     // STOP LOADING
 
     setIsSubmitting(false);
+    successHaptic();
 
-    // GO TO SCORE SCREEN
+    // GO TO SCORE SCREEN (replace, so Back doesn't return to a finished quiz)
 
-    router.push({
+    router.replace({
       pathname: "/score",
       params: {
-        score: finalScore,
-        total: quizQuestions.length,
-        answers: JSON.stringify(finalAnswers),
+        score: attempt.score,
+        total: attempt.total_questions,
+        answers: JSON.stringify(attempt.answers),
         topics,
         difficulty,
         questionCount,
@@ -305,430 +292,359 @@ export default function QuizScreen() {
     });
   };
 
-  // LOADING SCREEN
+  // MOVING BETWEEN QUESTIONS
+  // A question counts as "visited" once you've been on it, so the palette
+  // can show questions you skipped.
+
+  const markVisited = (indexes: number[]) => {
+    setQuestionStates((prev) =>
+      prev.map((state, index) =>
+        indexes.includes(index) ? { ...state, visited: true } : state,
+      ),
+    );
+  };
+
+  const goToQuestion = (index: number) => {
+    markVisited([currentQuestion, index]);
+    setCurrentQuestion(index);
+  };
+
+  const chooseAnswer = (option: string) => {
+    selectHaptic();
+    setQuestionStates((prev) =>
+      prev.map((state, index) =>
+        index === currentQuestion
+          ? { ...state, selectedAnswer: option, visited: true }
+          : state,
+      ),
+    );
+  };
+
+  const openExitDialog = () => {
+    warningHaptic();
+    setShowExitInterrupt(true);
+  };
+
+  // SUBMITTING
 
   if (isSubmitting) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#3B82F6" />
-
-        <Text style={styles.loadingTitle}>PROCESSING QUIZ</Text>
-
-        <Text style={styles.loadingSubtitle}>Calculating your results...</Text>
-      </View>
+      <SafeAreaView style={styles.centered}>
+        <ActivityIndicator size="large" color={colors.accent} />
+        <AppText variant="heading" style={styles.stateTitle}>
+          Marking your quiz
+        </AppText>
+        <AppText variant="small" tone="secondary">
+          This only takes a moment...
+        </AppText>
+      </SafeAreaView>
     );
   }
 
-  // WAIT FOR QUESTIONS
+  // COULD NOT LOAD QUESTIONS (no questions for this choice, offline, ...)
+
+  if (loadError) {
+    return (
+      <SafeAreaView style={styles.centered}>
+        <View style={styles.stateIcon}>
+          <Ionicons name="alert-circle-outline" size={30} color={colors.danger} />
+        </View>
+        <AppText variant="heading" center style={styles.stateTitle}>
+          Couldn&apos;t start the quiz
+        </AppText>
+        <AppText variant="small" tone="secondary" center>
+          {loadError}
+        </AppText>
+        <Button
+          title="Back to setup"
+          variant="secondary"
+          onPress={() => goBack("/quizInit")}
+          style={styles.stateButton}
+        />
+      </SafeAreaView>
+    );
+  }
+
+  // WAITING FOR QUESTIONS
 
   if (quizQuestions.length === 0) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#3B82F6" />
-
-        <Text style={styles.loadingTitle}>PREPARING QUIZ</Text>
-      </View>
+      <SafeAreaView style={styles.centered}>
+        <ActivityIndicator size="large" color={colors.accent} />
+        <AppText variant="heading" style={styles.stateTitle}>
+          Preparing your quiz
+        </AppText>
+      </SafeAreaView>
     );
   }
 
   // CURRENT QUESTION
 
   const question = quizQuestions[currentQuestion];
-
-  const selectedAnswer =
-    questionStates[currentQuestion]?.selectedAnswer ?? null;
-
+  const selectedAnswer = questionStates[currentQuestion]?.selectedAnswer ?? null;
+  const isFirst = currentQuestion === 0;
+  const isLast = currentQuestion === quizQuestions.length - 1;
   const progress = (currentQuestion + 1) / quizQuestions.length;
-
-  // UI
+  const answeredCount = questionStates.filter(
+    (state) => state.selectedAnswer !== null,
+  ).length;
+  const unansweredCount = quizQuestions.length - answeredCount;
 
   return (
-    <View style={styles.container}>
-      {/* 
-          TOP BAR
-       */}
-
-      <View style={styles.topBar}>
+    <Screen
+      scroll
+      header={
         <View>
-          <Text style={styles.questionCounter}>
-            QUESTION {currentQuestion + 1}
-            <Text style={styles.totalQuestions}>
-              {" "}
-              OF {quizQuestions.length}
-            </Text>
-          </Text>
+          <View style={styles.topBar}>
+            <IconButton icon="close" label="End quiz" onPress={openExitDialog} />
 
-          <View style={styles.progressTrack}>
-            <View
-              style={[
-                styles.progressFill,
-                {
-                  width: `${progress * 100}%`,
-                },
-              ]}
+            <AppText variant="bodyStrong">
+              Question {currentQuestion + 1}
+              <AppText variant="body" tone="muted">
+                {" "}
+                of {quizQuestions.length}
+              </AppText>
+            </AppText>
+
+            <IconButton
+              icon="grid-outline"
+              label="All questions"
+              onPress={() => setShowPalette(true)}
             />
           </View>
+
+          <View style={styles.progressTrack}>
+            <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
+          </View>
         </View>
+      }
+      footer={
+        <View style={styles.footerRow}>
+          <Button
+            title="Previous"
+            variant="secondary"
+            disabled={isFirst}
+            onPress={() => goToQuestion(currentQuestion - 1)}
+            style={styles.footerButton}
+          />
+          <Button
+            title={isLast ? "Submit" : "Next"}
+            onPress={() =>
+              isLast
+                ? setShowSubmitInterrupt(true)
+                : goToQuestion(currentQuestion + 1)
+            }
+            style={styles.footerButton}
+          />
+        </View>
+      }
+    >
+      {/* QUESTION */}
+      <AppText variant="title" style={styles.question}>
+        {question.question}
+      </AppText>
 
-        {/* QUESTION PALETTE BUTTON */}
-
-        <Animated.View
-          style={{
-            transform: [
-              {
-                scale: paletteScale,
-              },
-            ],
-          }}
-        >
-          <Pressable
-            style={styles.paletteButton}
-            onPress={() => setShowPalette(true)}
-            onPressIn={() => animatePress(paletteScale, true)}
-            onPressOut={() => animatePress(paletteScale, false)}
-          >
-            <Text style={styles.paletteButtonText}>☰</Text>
-          </Pressable>
-        </Animated.View>
-      </View>
-
-      {/* 
-          QUESTION CARD
-       */}
-
-      <View style={styles.questionCard}>
-        <Text style={styles.questionLabel}>QUESTION {currentQuestion + 1}</Text>
-
-        <Text style={styles.question}>{question.question}</Text>
-      </View>
-
-      {/* 
-          OPTIONS
-       */}
-
-      <View style={styles.optionsContainer}>
+      {/* OPTIONS */}
+      <View style={styles.options}>
         {question.options.map((option, index) => {
-          const letter = String.fromCharCode(65 + index);
-
           const isSelected = selectedAnswer === option;
+          const letter = String.fromCharCode(65 + index);
 
           return (
             <Pressable
               key={option}
-              style={[styles.option, isSelected && styles.selectedOption]}
-              onPress={() => {
-                setQuestionStates((prev) =>
-                  prev.map((state, stateIndex) =>
-                    stateIndex === currentQuestion
-                      ? {
-                          ...state,
-
-                          selectedAnswer: option,
-
-                          visited: true,
-                        }
-                      : state,
-                  ),
-                );
-              }}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: isSelected }}
+              accessibilityLabel={`Option ${letter}: ${option}`}
+              onPress={() => chooseAnswer(option)}
+              style={({ pressed }) => [
+                styles.option,
+                isSelected && styles.optionSelected,
+                pressed && !isSelected && styles.optionPressed,
+              ]}
             >
               <View
-                style={[
-                  styles.optionLetter,
-
-                  isSelected && styles.selectedOptionLetter,
-                ]}
+                style={[styles.optionLetter, isSelected && styles.optionLetterSelected]}
               >
-                <Text
-                  style={[
-                    styles.optionLetterText,
-
-                    isSelected && styles.selectedOptionLetterText,
-                  ]}
+                <AppText
+                  variant="caption"
+                  style={[styles.optionLetterText, isSelected && styles.white]}
                 >
                   {letter}
-                </Text>
+                </AppText>
               </View>
 
-              <Text style={styles.optionText}>{option}</Text>
+              <AppText variant="body" style={styles.optionText}>
+                {option}
+              </AppText>
 
-              {isSelected && <Text style={styles.checkMark}>✓</Text>}
+              <Ionicons
+                name={isSelected ? "checkmark-circle" : "ellipse-outline"}
+                size={22}
+                color={isSelected ? colors.accent : colors.borderStrong}
+              />
             </Pressable>
           );
         })}
       </View>
 
-      {/* 
-          NEXT / SUBMIT BUTTON
-       */}
-
-      <Animated.View
-        style={{
-          transform: [
-            {
-              scale: nextScale,
-            },
-          ],
-        }}
-      >
-        <Pressable
-          style={styles.nextButton}
-          onPressIn={() => animatePress(nextScale, true)}
-          onPressOut={() => animatePress(nextScale, false)}
-          onPress={() => {
-            // LAST QUESTION
-
-            if (currentQuestion === quizQuestions.length - 1) {
-              setShowSubmitInterrupt(true);
-
-              return;
-            }
-
-            // MARK CURRENT QUESTION VISITED
-
-            setQuestionStates((prev) =>
-              prev.map((state, index) =>
-                index === currentQuestion
-                  ? {
-                      ...state,
-
-                      visited: true,
-                    }
-                  : state,
-              ),
-            );
-
-            // MOVE TO NEXT QUESTION
-
-            setCurrentQuestion(currentQuestion + 1);
-          }}
-        >
-          <Text style={styles.nextText}>
-            {currentQuestion === quizQuestions.length - 1
-              ? "SUBMIT QUIZ"
-              : "NEXT"}
-          </Text>
-
-          <Text style={styles.nextArrow}>→</Text>
-        </Pressable>
-      </Animated.View>
-
-      {/* 
-          QUESTION PALETTE
-       */}
-
+      {/* QUESTION PALETTE (bottom sheet) */}
       <Modal
         visible={showPalette}
         animationType="slide"
-        transparent={true}
+        transparent
+        statusBarTranslucent
         onRequestClose={() => setShowPalette(false)}
       >
-        <View style={styles.paletteOverlay}>
-          {/* BACKGROUND DISMISS */}
-
+        <View style={styles.sheetOverlay}>
           <Pressable
-            style={styles.backgroundDismiss}
+            style={StyleSheet.absoluteFill}
             onPress={() => setShowPalette(false)}
           />
 
-          {/* PALETTE */}
+          <SafeAreaView edges={["bottom"]} style={styles.sheet}>
+            <View style={styles.sheetHandle} />
 
-          <View style={styles.palette}>
-            <Text style={styles.paletteTitle}>Question Palette</Text>
-
-            <Text style={styles.paletteSubtitle}>Jump to any question</Text>
+            <View style={styles.sheetHeader}>
+              <View>
+                <AppText variant="heading">All questions</AppText>
+                <AppText variant="caption" tone="secondary">
+                  {answeredCount} of {quizQuestions.length} answered
+                </AppText>
+              </View>
+              <IconButton
+                icon="close"
+                label="Close"
+                onPress={() => setShowPalette(false)}
+              />
+            </View>
 
             <View style={styles.paletteGrid}>
               {quizQuestions.map((_, index) => {
                 const state = questionStates[index];
-
-                let numberStyle = styles.paletteNumber;
-
-                // Current question
-
-                if (index === currentQuestion) {
-                  numberStyle = styles.currentNumber;
-                }
-
-                // Answered
-                else if (state?.selectedAnswer !== null) {
-                  numberStyle = styles.answeredNumber;
-                }
-
-                // Visited but unanswered
-                else if (state?.visited) {
-                  numberStyle = styles.skippedNumber;
-                }
+                const isCurrent = index === currentQuestion;
+                const isAnswered = state?.selectedAnswer != null;
+                const isSkipped = !isAnswered && state?.visited;
 
                 return (
                   <Pressable
                     key={index}
-                    style={numberStyle}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Question ${index + 1}`}
                     onPress={() => {
-                      // Mark as visited
-
-                      setQuestionStates((prev) =>
-                        prev.map((state, stateIndex) =>
-                          stateIndex === index
-                            ? {
-                                ...state,
-
-                                visited: true,
-                              }
-                            : state,
-                        ),
-                      );
-
-                      setCurrentQuestion(index);
-
+                      selectHaptic();
+                      goToQuestion(index);
                       setShowPalette(false);
                     }}
+                    style={[
+                      styles.paletteCell,
+                      isAnswered && styles.cellAnswered,
+                      isSkipped && styles.cellSkipped,
+                      isCurrent && styles.cellCurrent,
+                    ]}
                   >
-                    <Text style={styles.paletteNumberText}>{index + 1}</Text>
+                    <AppText variant="bodyStrong">{index + 1}</AppText>
                   </Pressable>
                 );
               })}
             </View>
 
-            {/* LEGEND */}
-
             <View style={styles.legend}>
-              <Text style={styles.legendText}>⚪ Not Visited</Text>
-
-              <Text style={styles.legendText}>🟢 Answered</Text>
-
-              <Text style={styles.legendText}>🔴 Skipped</Text>
-
-              <Text style={styles.legendText}>🔵 Current</Text>
+              <LegendItem color={colors.accent} label="Current" outline />
+              <LegendItem color={colors.success} label="Answered" />
+              <LegendItem color={colors.warning} label="Skipped" />
+              <LegendItem color={colors.surfaceRaised} label="Not seen" />
             </View>
-
-            {/* CLOSE */}
-
-            <Pressable
-              style={styles.closePalette}
-              onPress={() => setShowPalette(false)}
-            >
-              <Text style={styles.closePaletteText}>CLOSE</Text>
-            </Pressable>
-          </View>
+          </SafeAreaView>
         </View>
       </Modal>
 
-      {/* 
-          SUBMIT CONFIRMATION
-       */}
-
-      <Modal
+      {/* SUBMIT CONFIRMATION */}
+      <ConfirmDialog
         visible={showSubmitInterrupt}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowSubmitInterrupt(false)}
-      >
-        <View style={styles.interruptOverlay}>
-          <View style={styles.interruptCard}>
-            <Text style={styles.interruptTitle}>Submit Quiz?</Text>
+        icon="checkmark-done-outline"
+        title="Submit quiz?"
+        message={
+          unansweredCount > 0
+            ? `You have ${unansweredCount} unanswered ${unansweredCount === 1 ? "question" : "questions"}. They'll be marked wrong.`
+            : "You've answered every question. Ready to see your score?"
+        }
+        confirmLabel="Submit"
+        cancelLabel="Keep going"
+        onCancel={() => setShowSubmitInterrupt(false)}
+        onConfirm={submitQuiz}
+      />
 
-            <Text style={styles.interruptMessage}>
-              Are you sure you want to submit your quiz?
-            </Text>
-
-            <View style={styles.interruptButtons}>
-              <Pressable
-                style={styles.cancelButton}
-                onPress={() => setShowSubmitInterrupt(false)}
-              >
-                <Text style={styles.cancelButtonText}>CANCEL</Text>
-              </Pressable>
-
-              <Pressable style={styles.confirmButton} onPress={submitQuiz}>
-                <Text style={styles.confirmButtonText}>SUBMIT</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* 
-          EXIT QUIZ CONFIRMATION
-       */}
-
-      <Modal
+      {/* EXIT CONFIRMATION */}
+      <ConfirmDialog
         visible={showExitInterrupt}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowExitInterrupt(false)}
-      >
-        <View style={styles.interruptOverlay}>
-          <View style={styles.interruptCard}>
-            <Text style={styles.interruptTitle}>End Quiz?</Text>
+        icon="exit-outline"
+        title="End this quiz?"
+        message="Your answers won't be saved."
+        confirmLabel="End quiz"
+        cancelLabel="Stay"
+        destructive
+        onCancel={() => setShowExitInterrupt(false)}
+        onConfirm={() => {
+          setShowExitInterrupt(false);
+          goHome();
+        }}
+      />
+    </Screen>
+  );
+}
 
-            <Text style={styles.interruptMessage}>
-              Are you sure you want to leave? Your current attempt will be lost.
-            </Text>
-
-            <View style={styles.interruptButtons}>
-              <Pressable
-                style={styles.cancelButton}
-                onPress={() => setShowExitInterrupt(false)}
-              >
-                <Text style={styles.cancelButtonText}>CANCEL</Text>
-              </Pressable>
-
-              <Pressable
-                style={styles.confirmButton}
-                onPress={() => {
-                  setShowExitInterrupt(false);
-
-                  router.replace("/");
-                }}
-              >
-                <Text style={styles.confirmButtonText}>END QUIZ</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
+function LegendItem({
+  color,
+  label,
+  outline,
+}: {
+  color: string;
+  label: string;
+  outline?: boolean;
+}) {
+  return (
+    <View style={styles.legendItem}>
+      <View
+        style={[
+          styles.legendDot,
+          outline
+            ? { borderColor: color, borderWidth: 2 }
+            : { backgroundColor: color },
+        ]}
+      />
+      <AppText variant="caption" tone="secondary">
+        {label}
+      </AppText>
     </View>
   );
 }
 
-// ========
-// STYLES
-// ========
-
 const styles = StyleSheet.create({
-  // MAIN SCREEN
+  // LOADING / ERROR STATES
 
-  container: {
+  centered: {
     flex: 1,
-    backgroundColor: "#0B1220",
-    paddingHorizontal: 20,
-    paddingTop: 55,
-    paddingBottom: 55,
-  },
-
-  // LOADING
-
-  loadingContainer: {
-    flex: 1,
-    backgroundColor: "#0B1220",
-    justifyContent: "center",
+    backgroundColor: colors.background,
     alignItems: "center",
-    paddingHorizontal: 30,
+    justifyContent: "center",
+    paddingHorizontal: layout.screenPadding,
+    gap: spacing.sm,
   },
-
-  loadingTitle: {
-    color: "#FFFFFF",
-    fontSize: 17,
-    fontWeight: "bold",
-    letterSpacing: 1.5,
-    marginTop: 22,
+  stateIcon: {
+    width: 60,
+    height: 60,
+    borderRadius: radius.pill,
+    backgroundColor: colors.dangerSoft,
+    alignItems: "center",
+    justifyContent: "center",
   },
-
-  loadingSubtitle: {
-    color: "#A8B3C7",
-    fontSize: 14,
-    marginTop: 8,
+  stateTitle: {
+    marginTop: spacing.md,
+  },
+  stateButton: {
+    marginTop: spacing.xl,
+    alignSelf: "stretch",
   },
 
   // TOP BAR
@@ -737,366 +653,156 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 25,
+    paddingHorizontal: spacing.lg,
+    height: 56,
   },
-
-  questionCounter: {
-    color: "#FFFFFF",
-    fontSize: 14,
-    fontWeight: "bold",
-    letterSpacing: 1,
-  },
-
-  totalQuestions: {
-    color: "#A8B3C7",
-    fontWeight: "500",
-  },
-
   progressTrack: {
-    width: 150,
-    height: 5,
-    backgroundColor: "#17233A",
-    borderRadius: 5,
-    marginTop: 8,
-    overflow: "hidden",
+    height: 4,
+    backgroundColor: colors.surface,
   },
-
   progressFill: {
     height: "100%",
-    backgroundColor: "#3B82F6",
-    borderRadius: 5,
+    backgroundColor: colors.accent,
+    borderTopRightRadius: 2,
+    borderBottomRightRadius: 2,
   },
 
-  // PALETTE BUTTON
-
-  paletteButton: {
-    width: 48,
-    height: 42,
-    borderRadius: 10,
-    backgroundColor: "#17233A",
-    borderWidth: 1,
-    borderColor: "#263653",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  paletteButtonText: {
-    color: "#3B82F6",
-    fontSize: 22,
-    fontWeight: "bold",
-  },
-
-  // QUESTION CARD
-
-  questionCard: {
-    backgroundColor: "#17233A",
-    borderRadius: 18,
-    padding: 24,
-    marginBottom: 22,
-    borderWidth: 1,
-    borderColor: "#263653",
-  },
-
-  questionLabel: {
-    color: "#3B82F6",
-    fontSize: 12,
-    fontWeight: "bold",
-    letterSpacing: 1.5,
-    marginBottom: 12,
-  },
+  // QUESTION
 
   question: {
-    color: "#FFFFFF",
     fontSize: 22,
-    fontWeight: "bold",
-    lineHeight: 31,
+    lineHeight: 30,
+    marginTop: spacing.xl,
+    marginBottom: spacing.xl,
   },
 
   // OPTIONS
 
-  optionsContainer: {
-    gap: 12,
-    flex: 1,
+  options: {
+    gap: spacing.md,
   },
-
   option: {
-    minHeight: 58,
-    backgroundColor: "#17233A",
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#263653",
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 14,
+    gap: spacing.md,
+    minHeight: 60,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
   },
-
-  selectedOption: {
-    backgroundColor: "#172F55",
-    borderColor: "#3B82F6",
-    borderWidth: 2,
+  optionPressed: {
+    backgroundColor: colors.surfaceRaised,
   },
-
+  optionSelected: {
+    borderColor: colors.accent,
+    backgroundColor: colors.accentSoft,
+  },
   optionLetter: {
-    width: 34,
-    height: 34,
-    borderRadius: 9,
-    backgroundColor: "#263653",
-    justifyContent: "center",
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    backgroundColor: colors.surfaceRaised,
     alignItems: "center",
-    marginRight: 13,
+    justifyContent: "center",
   },
-
-  selectedOptionLetter: {
-    backgroundColor: "#3B82F6",
+  optionLetterSelected: {
+    backgroundColor: colors.accent,
   },
-
   optionLetterText: {
-    color: "#A8B3C7",
-    fontSize: 14,
-    fontWeight: "bold",
+    color: colors.textSecondary,
+    fontWeight: "700",
   },
-
-  selectedOptionLetterText: {
+  white: {
     color: "#FFFFFF",
   },
-
   optionText: {
     flex: 1,
-    color: "#FFFFFF",
-    fontSize: 16,
-    lineHeight: 22,
   },
 
-  checkMark: {
-    color: "#3B82F6",
-    fontSize: 22,
-    fontWeight: "bold",
-    marginLeft: 8,
-  },
+  // FOOTER
 
-  // NEXT BUTTON
-
-  nextButton: {
-    height: 58,
-    backgroundColor: "#3B82F6",
-    borderRadius: 14,
-    marginTop: 18,
+  footerRow: {
     flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-
-    shadowColor: "#3B82F6",
-
-    shadowOffset: {
-      width: 0,
-      height: 6,
-    },
-
-    shadowOpacity: 0.25,
-    shadowRadius: 10,
-    elevation: 6,
+    gap: spacing.md,
   },
-
-  nextText: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "bold",
-    letterSpacing: 1,
-  },
-
-  nextArrow: {
-    color: "#FFFFFF",
-    fontSize: 23,
-    marginLeft: 10,
-  },
-
-  // PALETTE OVERLAY
-
-  paletteOverlay: {
+  footerButton: {
     flex: 1,
-    backgroundColor: "rgba(5, 10, 20, 0.72)",
+  },
+
+  // PALETTE SHEET
+
+  sheetOverlay: {
+    flex: 1,
+    backgroundColor: colors.overlay,
     justifyContent: "flex-end",
   },
-
-  backgroundDismiss: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    left: 0,
-    right: 0,
+  sheet: {
+    backgroundColor: colors.surface,
+    borderTopLeftRadius: radius.lg + 4,
+    borderTopRightRadius: radius.lg + 4,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: layout.screenPadding,
+    paddingBottom: spacing.lg,
   },
-
-  // PALETTE
-
-  palette: {
-    width: "80%",
-    height: "100%",
-    alignSelf: "flex-end",
-    backgroundColor: "#0F192B",
-    padding: 25,
-    paddingTop: 60,
-    borderLeftWidth: 1,
-    borderLeftColor: "#263653",
+  sheetHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.borderStrong,
+    alignSelf: "center",
+    marginTop: spacing.sm,
+    marginBottom: spacing.md,
   },
-
-  paletteTitle: {
-    color: "#FFFFFF",
-    fontSize: 24,
-    fontWeight: "bold",
+  sheetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: spacing.lg,
   },
-
-  paletteSubtitle: {
-    color: "#A8B3C7",
-    fontSize: 14,
-    marginTop: 6,
-    marginBottom: 28,
-  },
-
   paletteGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    justifyContent: "flex-start",
-    gap: 12,
-  },
-
-  paletteNumber: {
-    width: 48,
-    height: 48,
-    borderRadius: 10,
-    backgroundColor: "#263653",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  answeredNumber: {
-    width: 48,
-    height: 48,
-    borderRadius: 10,
-    backgroundColor: "#1F7A3F",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  skippedNumber: {
-    width: 48,
-    height: 48,
-    borderRadius: 10,
-    backgroundColor: "#B3261E",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  currentNumber: {
-    width: 48,
-    height: 48,
-    borderRadius: 10,
-    backgroundColor: "#3B82F6",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  paletteNumberText: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "bold",
-  },
-
-  legend: {
-    marginTop: 30,
     gap: 10,
   },
-
-  legendText: {
-    color: "#A8B3C7",
-    fontSize: 14,
-  },
-
-  closePalette: {
-    marginTop: 30,
-    padding: 15,
-    borderRadius: 10,
-    backgroundColor: "#17233A",
-    borderWidth: 1,
-    borderColor: "#263653",
+  paletteCell: {
+    width: 50,
+    height: 50,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surfaceRaised,
     alignItems: "center",
-  },
-
-  closePaletteText: {
-    color: "#FFFFFF",
-    fontWeight: "bold",
-    fontSize: 14,
-    letterSpacing: 1,
-  },
-
-  // INTERRUPT / CONFIRMATION MODALS
-
-  interruptOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(5, 10, 20, 0.75)",
     justifyContent: "center",
-    alignItems: "center",
-    paddingHorizontal: 25,
+    borderWidth: 2,
+    borderColor: "transparent",
   },
-
-  interruptCard: {
-    width: "100%",
-    backgroundColor: "#17233A",
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "#263653",
-    padding: 25,
+  cellAnswered: {
+    backgroundColor: colors.successSoft,
+    borderColor: "rgba(34, 197, 94, 0.45)",
   },
-
-  interruptTitle: {
-    color: "#FFFFFF",
-    fontSize: 22,
-    fontWeight: "bold",
+  cellSkipped: {
+    backgroundColor: colors.warningSoft,
+    borderColor: "rgba(245, 158, 11, 0.45)",
   },
-
-  interruptMessage: {
-    color: "#A8B3C7",
-    fontSize: 15,
-    lineHeight: 22,
-    marginTop: 12,
+  cellCurrent: {
+    borderColor: colors.accent,
   },
-
-  interruptButtons: {
+  legend: {
     flexDirection: "row",
-    gap: 12,
-    marginTop: 25,
+    flexWrap: "wrap",
+    gap: spacing.lg,
+    marginTop: spacing.xl,
   },
-
-  cancelButton: {
-    flex: 1,
-    height: 50,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#263653",
-    justifyContent: "center",
+  legendItem: {
+    flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#0F192B",
+    gap: 6,
   },
-
-  cancelButtonText: {
-    color: "#A8B3C7",
-    fontSize: 13,
-    fontWeight: "bold",
-    letterSpacing: 1,
-  },
-
-  confirmButton: {
-    flex: 1,
-    height: 50,
-    borderRadius: 12,
-    backgroundColor: "#3B82F6",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  confirmButtonText: {
-    color: "#FFFFFF",
-    fontSize: 13,
-    fontWeight: "bold",
-    letterSpacing: 1,
+  legendDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 4,
   },
 });

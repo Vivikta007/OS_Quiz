@@ -1,209 +1,245 @@
-import { router, useLocalSearchParams } from "expo-router";
-import { useRef } from "react";
-import {
-    Animated,
-    Pressable,
-    ScrollView,
-    StyleSheet,
-    Text,
-    View,
-} from "react-native";
+import Ionicons from "@expo/vector-icons/Ionicons";
+import { useLocalSearchParams } from "expo-router";
+import { useState } from "react";
+import { StyleSheet, View } from "react-native";
+
+import { goHome } from "@/lib/navigation";
+import { AppText } from "@/ui/AppText";
+import { Button } from "@/ui/Button";
+import { Card } from "@/ui/Card";
+import { SegmentedControl } from "@/ui/Choice";
+import { Header } from "@/ui/Header";
+import { Screen } from "@/ui/Screen";
+import { StateView } from "@/ui/StateView";
+import { colors, radius, spacing } from "@/ui/theme";
 
 type AnswerRecord = {
   question: string;
   options: string[];
-  selectedAnswer: string;
+  selectedAnswer: string; // "" when the question was skipped
   correctAnswer: string;
+  explanation?: string | null; // missing on older attempts
 };
 
+const FILTERS = ["All", "Wrong only"] as const;
+
+function parseAnswers(raw: string | undefined): AnswerRecord[] {
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
 export default function ReviewScreen() {
-  const { answers } = useLocalSearchParams();
+  const { answers } = useLocalSearchParams<{ answers?: string }>();
+  const answerData = parseAnswers(answers);
+  const [filter, setFilter] = useState<(typeof FILTERS)[number]>("All");
 
-  const answerData: AnswerRecord[] = answers
-    ? JSON.parse(answers as string)
-    : [];
+  const correctCount = answerData.filter(
+    (item) => item.selectedAnswer === item.correctAnswer,
+  ).length;
+  const wrongCount = answerData.length - correctCount;
 
-  const homeScale = useRef(new Animated.Value(1)).current;
+  // Keep each question's original number when filtering
+  const shown = answerData
+    .map((item, index) => ({ item, number: index + 1 }))
+    .filter(
+      ({ item }) => filter === "All" || item.selectedAnswer !== item.correctAnswer,
+    );
 
-  const animatePress = (pressed: boolean) => {
-    Animated.spring(homeScale, {
-      toValue: pressed ? 0.96 : 1,
-      useNativeDriver: true,
-      speed: 20,
-      bounciness: 6,
-    }).start();
-  };
+  const header = <Header title="Review answers" />;
+
+  if (answerData.length === 0) {
+    return (
+      <Screen header={header}>
+        <StateView
+          icon="document-text-outline"
+          title="Nothing to review"
+          message="This quiz has no saved answers."
+        >
+          <Button title="Back to home" variant="secondary" onPress={goHome} />
+        </StateView>
+      </Screen>
+    );
+  }
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Review Answers</Text>
+    <Screen
+      scroll
+      header={header}
+      footer={<Button title="Back to home" onPress={goHome} />}
+    >
+      <AppText variant="heading" center style={styles.summary}>
+        {correctCount} of {answerData.length} correct
+      </AppText>
 
-      <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={true}
-      >
-        {answerData.map((item, questionIndex) => {
-          const isCorrect = item.selectedAnswer === item.correctAnswer;
+      {wrongCount > 0 && (
+        <View style={styles.filter}>
+          <SegmentedControl
+            options={FILTERS}
+            value={filter}
+            onChange={setFilter}
+            format={(option) =>
+              option === "All" ? `All (${answerData.length})` : `Wrong (${wrongCount})`
+            }
+          />
+        </View>
+      )}
+
+      <View style={styles.list}>
+        {shown.map(({ item, number }) => (
+          <QuestionReview key={number} item={item} number={number} />
+        ))}
+      </View>
+    </Screen>
+  );
+}
+
+function QuestionReview({ item, number }: { item: AnswerRecord; number: number }) {
+  const skipped = !item.selectedAnswer;
+  const isCorrect = item.selectedAnswer === item.correctAnswer;
+
+  return (
+    <Card style={styles.card}>
+      <View style={styles.cardTop}>
+        <AppText variant="label" tone="accent">
+          Question {number}
+        </AppText>
+        <View
+          style={[
+            styles.result,
+            { backgroundColor: isCorrect ? colors.successSoft : colors.dangerSoft },
+          ]}
+        >
+          <Ionicons
+            name={isCorrect ? "checkmark" : skipped ? "remove" : "close"}
+            size={14}
+            color={isCorrect ? colors.success : colors.danger}
+          />
+          <AppText
+            variant="caption"
+            style={{ color: isCorrect ? colors.success : colors.danger }}
+          >
+            {isCorrect ? "Correct" : skipped ? "Not answered" : "Incorrect"}
+          </AppText>
+        </View>
+      </View>
+
+      <AppText variant="bodyStrong">{item.question}</AppText>
+
+      <View style={styles.options}>
+        {item.options.map((option, optionIndex) => {
+          const correct = option === item.correctAnswer;
+          const pickedWrong = !correct && option === item.selectedAnswer;
 
           return (
-            <View key={questionIndex} style={styles.questionCard}>
-              <Text style={styles.questionNumber}>
-                QUESTION {questionIndex + 1}
-              </Text>
-
-              <Text style={styles.question}>{item.question}</Text>
-
-              {item.options.map((option, optionIndex) => {
-                const isCorrectAnswer = option === item.correctAnswer;
-                const isSelectedAnswer = option === item.selectedAnswer;
-
-                let optionStyle = styles.option;
-
-                if (isCorrectAnswer) {
-                  optionStyle = styles.correctOption;
-                } else if (isSelectedAnswer) {
-                  optionStyle = styles.wrongOption;
-                }
-
-                return (
-                  <View key={option} style={optionStyle}>
-                    <Text style={styles.optionText}>
-                      {String.fromCharCode(65 + optionIndex)}. {option}
-                    </Text>
-                  </View>
-                );
-              })}
-
-              <Text
-                style={isCorrect ? styles.correctText : styles.incorrectText}
+            <View
+              key={option}
+              style={[
+                styles.option,
+                correct && styles.correctOption,
+                pickedWrong && styles.wrongOption,
+              ]}
+            >
+              <AppText
+                variant="small"
+                tone={correct ? "success" : pickedWrong ? "danger" : "secondary"}
+                style={styles.optionLetter}
               >
-                {isCorrect ? "✓ Correct" : "✕ Incorrect"}
-              </Text>
+                {String.fromCharCode(65 + optionIndex)}
+              </AppText>
+              <AppText variant="small" style={styles.optionText}>
+                {option}
+              </AppText>
+              {correct && (
+                <Ionicons name="checkmark-circle" size={18} color={colors.success} />
+              )}
+              {pickedWrong && (
+                <Ionicons name="close-circle" size={18} color={colors.danger} />
+              )}
             </View>
           );
         })}
+      </View>
 
-        <Animated.View style={{ transform: [{ scale: homeScale }] }}>
-          <Pressable
-            style={styles.homeButton}
-            onPress={() => router.replace("/")}
-            onPressIn={() => animatePress(true)}
-            onPressOut={() => animatePress(false)}
-          >
-            <Text style={styles.homeButtonText}>BACK TO HOME</Text>
-          </Pressable>
-        </Animated.View>
-      </ScrollView>
-    </View>
+      {item.explanation && (
+        <View style={styles.explanation}>
+          <Ionicons name="bulb-outline" size={16} color={colors.accentText} />
+          <AppText variant="small" tone="secondary" style={styles.explanationText}>
+            {item.explanation}
+          </AppText>
+        </View>
+      )}
+    </Card>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#0B1220",
-    paddingTop: 55,
+  summary: {
+    marginTop: spacing.sm,
+    marginBottom: spacing.lg,
   },
-
-  title: {
-    fontSize: 30,
-    fontWeight: "bold",
-    color: "#FFFFFF",
-    textAlign: "center",
-    marginBottom: 20,
+  filter: {
+    marginBottom: spacing.lg,
   },
-
-  scrollView: {
-    flex: 1,
+  list: {
+    gap: spacing.md,
   },
-
-  content: {
-    paddingHorizontal: 20,
-    paddingBottom: 55,
+  card: {
+    gap: spacing.md,
   },
-
-  questionCard: {
-    backgroundColor: "#17233A",
-    borderRadius: 14,
-    padding: 18,
-    marginBottom: 18,
-    borderWidth: 1,
-    borderColor: "#263653",
-  },
-
-  questionNumber: {
-    color: "#3B82F6",
-    fontSize: 13,
-    fontWeight: "bold",
-    letterSpacing: 1,
-    marginBottom: 10,
-  },
-
-  question: {
-    color: "#FFFFFF",
-    fontSize: 19,
-    fontWeight: "bold",
-    marginBottom: 18,
-    lineHeight: 26,
-  },
-
-  option: {
-    backgroundColor: "#263653",
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 10,
-  },
-
-  correctOption: {
-    backgroundColor: "#1f7a3f",
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 10,
-  },
-
-  wrongOption: {
-    backgroundColor: "#9b2c2c",
-    padding: 15,
-    borderRadius: 10,
-    marginBottom: 10,
-  },
-
-  optionText: {
-    color: "#FFFFFF",
-    fontSize: 15,
-    lineHeight: 21,
-  },
-
-  correctText: {
-    color: "#4ade80",
-    fontSize: 15,
-    fontWeight: "bold",
-    marginTop: 3,
-  },
-
-  incorrectText: {
-    color: "#f87171",
-    fontSize: 15,
-    fontWeight: "bold",
-    marginTop: 3,
-  },
-
-  homeButton: {
-    height: 56,
-    backgroundColor: "#17233A",
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#263653",
-    justifyContent: "center",
+  cardTop: {
+    flexDirection: "row",
     alignItems: "center",
-    marginTop: 2,
+    justifyContent: "space-between",
   },
-
-  homeButtonText: {
-    color: "#FFFFFF",
-    fontSize: 14,
-    fontWeight: "600",
-    letterSpacing: 1,
+  result: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+  },
+  options: {
+    gap: spacing.sm,
+  },
+  option: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceRaised,
+  },
+  correctOption: {
+    borderColor: colors.success,
+    backgroundColor: colors.successSoft,
+  },
+  wrongOption: {
+    borderColor: colors.danger,
+    backgroundColor: colors.dangerSoft,
+  },
+  optionLetter: {
+    fontWeight: "700",
+    width: 16,
+  },
+  optionText: {
+    flex: 1,
+  },
+  explanation: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    padding: spacing.md,
+    borderRadius: radius.sm,
+    backgroundColor: colors.accentSoft,
+  },
+  explanationText: {
+    flex: 1,
   },
 });

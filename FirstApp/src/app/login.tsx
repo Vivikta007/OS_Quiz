@@ -1,19 +1,22 @@
 import { router } from "expo-router";
-import * as SecureStore from "expo-secure-store";
 import { useState } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 
-const API_URL = "http://172.20.165.150:8000";
+import { showAlert } from "@/lib/alert";
+import { apiRequest } from "@/lib/api";
+import { saveSession } from "@/lib/auth";
+import { AppText } from "@/ui/AppText";
+import { AuthHeader, LinkRow } from "@/ui/Auth";
+import { Button } from "@/ui/Button";
+import { Screen } from "@/ui/Screen";
+import { TextField } from "@/ui/TextField";
+import { colors, layout, spacing } from "@/ui/theme";
+
+// Hidden until custom SMTP is set up in Supabase: the built-in email
+// sender only reaches the project's team, and its Reset Password template
+// (which must contain {{ .Token }}) can't be edited without custom SMTP.
+// The screen and backend endpoints are ready - flip this to turn it on.
+const SHOW_FORGOT_PASSWORD = false;
 
 export default function LoginScreen() {
   const [email, setEmail] = useState("");
@@ -22,219 +25,125 @@ export default function LoginScreen() {
 
   const handleLogin = async () => {
     if (!email.trim() || !password) {
-      Alert.alert("Missing details", "Please enter your email and password.");
+      showAlert("Missing details", "Please enter your email and password.");
       return;
     }
 
     try {
       setLoading(true);
 
-      const response = await fetch(`${API_URL}/login`, {
+      const data = await apiRequest("/login", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
+        body: {
           email: email.trim(),
           password,
-        }),
+        },
       });
 
-      const data = await response.json();
+      await saveSession({
+        access_token: data.access_token,
+        refresh_token: data.refresh_token,
+        user_id: data.user_id,
+        user_email: data.email,
+      });
 
-      if (!response.ok) {
-        throw new Error(data.detail || "Login failed. Please try again.");
-      }
-
-      await SecureStore.setItemAsync("access_token", data.access_token);
-      await SecureStore.setItemAsync("refresh_token", data.refresh_token);
-      await SecureStore.setItemAsync("user_id", data.user_id);
-      await SecureStore.setItemAsync("user_email", data.email);
-
-      router.replace("/home");
+      // Saving the session marks the user as logged in, and the layout's
+      // Stack.Protected guard moves them on to /home - no navigation needed.
     } catch (error) {
       const message =
         error instanceof Error
           ? error.message
           : "Unable to connect to the server.";
 
-      Alert.alert("Login failed", message);
+      showAlert("Login failed", message);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-    >
+    <Screen scroll keyboard>
       <View style={styles.content}>
-        <View style={styles.header}>
-          <Text style={styles.title}>OS QUIZ</Text>
-          <View style={styles.titleLine} />
-          <Text style={styles.subtitle}>Sign in to continue learning</Text>
-        </View>
+        <AuthHeader subtitle="Sign in to continue learning" />
 
         <View style={styles.form}>
-          <Text style={styles.label}>EMAIL</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Enter your email"
-            placeholderTextColor="#64748B"
+          <TextField
+            label="Email"
+            placeholder="you@example.com"
             value={email}
             onChangeText={setEmail}
             keyboardType="email-address"
             autoCapitalize="none"
             autoCorrect={false}
             autoComplete="email"
+            returnKeyType="next"
             editable={!loading}
           />
 
-          <Text style={styles.label}>PASSWORD</Text>
-          <TextInput
-            style={styles.input}
+          <TextField
+            label="Password"
             placeholder="Enter your password"
-            placeholderTextColor="#64748B"
             value={password}
             onChangeText={setPassword}
-            secureTextEntry
+            password
             autoComplete="current-password"
+            returnKeyType="go"
+            onSubmitEditing={handleLogin}
             editable={!loading}
           />
 
-          <Pressable
-            style={[styles.loginButton, loading && styles.loginButtonDisabled]}
-            onPress={handleLogin}
-            disabled={loading}
-          >
-            {loading ? (
-              <ActivityIndicator color="#FFFFFF" />
-            ) : (
-              <>
-                <Text style={styles.loginButtonText}>LOG IN</Text>
-                <Text style={styles.arrow}>→</Text>
-              </>
-            )}
-          </Pressable>
-
-          <View style={styles.registerRow}>
-            <Text style={styles.registerText}>Don't have an account? </Text>
+          {SHOW_FORGOT_PASSWORD && (
             <Pressable
-              onPress={() => router.push("/register")}
+              accessibilityRole="link"
+              hitSlop={layout.hitSlop}
+              style={styles.forgot}
+              onPress={() => router.push("/forgot-password")}
               disabled={loading}
             >
-              <Text style={styles.registerLink}>Register</Text>
+              <AppText variant="small" style={styles.forgotText}>
+                Forgot password?
+              </AppText>
             </Pressable>
-          </View>
+          )}
+
+          <Button
+            title="Log in"
+            trailingIcon="arrow-forward"
+            loading={loading}
+            onPress={handleLogin}
+            style={styles.submit}
+          />
+
+          <LinkRow
+            text="Don't have an account?"
+            link="Register"
+            onPress={() => router.push("/register")}
+            disabled={loading}
+          />
         </View>
       </View>
-
-      <Text style={styles.footer}>OPERATING SYSTEMS • QUIZ APP</Text>
-    </KeyboardAvoidingView>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#0B1220",
-    paddingHorizontal: 25,
-    paddingTop: 70,
-    paddingBottom: 30,
-    justifyContent: "space-between",
-  },
   content: {
     flex: 1,
     justifyContent: "center",
-  },
-  header: {
-    alignItems: "center",
-    marginBottom: 45,
-  },
-  title: {
-    color: "#FFFFFF",
-    fontSize: 42,
-    fontWeight: "bold",
-    letterSpacing: 4,
-  },
-  titleLine: {
-    width: 55,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: "#3B82F6",
-    marginTop: 12,
-  },
-  subtitle: {
-    color: "#A8B3C7",
-    fontSize: 15,
-    textAlign: "center",
-    marginTop: 14,
+    paddingVertical: spacing.xl,
   },
   form: {
-    width: "100%",
-    gap: 12,
+    gap: spacing.lg,
   },
-  label: {
-    color: "#A8B3C7",
-    fontSize: 12,
-    fontWeight: "bold",
-    letterSpacing: 1,
-    marginTop: 8,
+  forgot: {
+    alignSelf: "flex-end",
+    marginTop: -spacing.xs,
   },
-  input: {
-    height: 54,
-    backgroundColor: "#17233A",
-    borderWidth: 1,
-    borderColor: "#263653",
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    color: "#FFFFFF",
-    fontSize: 15,
+  forgotText: {
+    color: colors.accentText,
+    fontWeight: "600",
   },
-  loginButton: {
-    height: 60,
-    backgroundColor: "#3B82F6",
-    borderRadius: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 20,
-  },
-  loginButtonDisabled: {
-    opacity: 0.7,
-  },
-  loginButtonText: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "bold",
-    letterSpacing: 1,
-  },
-  arrow: {
-    color: "#FFFFFF",
-    fontSize: 24,
-    marginLeft: 12,
-  },
-  registerRow: {
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-    marginTop: 18,
-    flexWrap: "wrap",
-  },
-  registerText: {
-    color: "#A8B3C7",
-    fontSize: 14,
-  },
-  registerLink: {
-    color: "#60A5FA",
-    fontSize: 14,
-    fontWeight: "bold",
-  },
-  footer: {
-    color: "#52617A",
-    fontSize: 11,
-    textAlign: "center",
-    letterSpacing: 1,
+  submit: {
+    marginTop: spacing.sm,
   },
 });

@@ -1,47 +1,34 @@
-import { router } from "expo-router";
-import { useRef } from "react";
-import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
+import Ionicons from "@expo/vector-icons/Ionicons";
+import { StyleSheet, View } from "react-native";
 
+import { goBack } from "@/lib/navigation";
+import { AppText } from "@/ui/AppText";
+import { Button } from "@/ui/Button";
+import { colors, radius, spacing } from "@/ui/theme";
+
+// Shown over the quiz (transparentModal) when the user leaves the app
+// mid-quiz. Resuming just closes this overlay.
 export default function PausedScreen() {
-  const resumeScale = useRef(new Animated.Value(1)).current;
-
-  const animatePress = (pressed: boolean) => {
-    Animated.spring(resumeScale, {
-      toValue: pressed ? 0.96 : 1,
-      useNativeDriver: true,
-      speed: 20,
-      bounciness: 6,
-    }).start();
-  };
-
   return (
     <View style={styles.overlay}>
-      <View style={styles.pauseBox}>
-        <Text style={styles.title}>Quiz Paused</Text>
+      <View style={styles.card}>
+        <View style={styles.iconCircle}>
+          <Ionicons name="pause" size={28} color={colors.accentText} />
+        </View>
 
-        <View style={styles.line} />
+        <AppText variant="title" center>
+          Quiz paused
+        </AppText>
+        <AppText variant="small" tone="secondary" center style={styles.message}>
+          The quiz was paused because you left the app. Your answers so far
+          are safe.
+        </AppText>
 
-        <Text style={styles.message}>
-          The quiz was paused because you left the app.
-        </Text>
-
-        <Animated.View style={{ transform: [{ scale: resumeScale }] }}>
-          <Pressable
-            style={styles.button}
-            onPress={() => {
-              if (router.canGoBack()) {
-                router.back();
-              } else {
-                router.replace("/");
-              }
-            }}
-            onPressIn={() => animatePress(true)}
-            onPressOut={() => animatePress(false)}
-          >
-            <Text style={styles.buttonText}>RESUME QUIZ</Text>
-            <Text style={styles.arrow}>→</Text>
-          </Pressable>
-        </Animated.View>
+        <Button
+          title="Resume quiz"
+          onPress={() => goBack()}
+          style={styles.button}
+        />
       </View>
     </View>
   );
@@ -50,66 +37,34 @@ export default function PausedScreen() {
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: "rgba(11, 18, 32, 0.65)",
+    backgroundColor: colors.overlay,
     justifyContent: "center",
     alignItems: "center",
-    padding: 25,
+    padding: spacing.xl,
   },
-
-  pauseBox: {
-    backgroundColor: "#17233A",
-    padding: 28,
-    borderRadius: 16,
-    width: "90%",
+  card: {
+    width: "100%",
+    maxWidth: 380,
     alignItems: "center",
+    gap: spacing.md,
+    padding: spacing.xl,
+    borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: "#263653",
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
   },
-
-  title: {
-    color: "#FFFFFF",
-    fontSize: 28,
-    fontWeight: "bold",
-    marginBottom: 12,
-  },
-
-  line: {
-    width: 45,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: "#3B82F6",
-    marginBottom: 18,
-  },
-
-  message: {
-    color: "#A8B3C7",
-    fontSize: 15,
-    lineHeight: 22,
-    textAlign: "center",
-    marginBottom: 25,
-  },
-
-  button: {
-    height: 54,
-    backgroundColor: "#3B82F6",
-    borderRadius: 13,
-    paddingHorizontal: 25,
-    flexDirection: "row",
+  iconCircle: {
+    width: 60,
+    height: 60,
+    borderRadius: radius.pill,
     alignItems: "center",
     justifyContent: "center",
+    backgroundColor: colors.accentSoft,
   },
-
-  buttonText: {
-    color: "#FFFFFF",
-    fontSize: 15,
-    fontWeight: "bold",
-    letterSpacing: 1,
+  message: {
+    marginBottom: spacing.sm,
   },
-
-  arrow: {
-    color: "#FFFFFF",
-    fontSize: 22,
-    marginLeft: 10,
-    marginTop: -2,
+  button: {
+    alignSelf: "stretch",
   },
 });

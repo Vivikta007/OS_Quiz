@@ -1,205 +1,181 @@
-import { clearSession } from "@/lib/auth";
-import { router } from "expo-router";
-import { useRef, useState } from "react";
-import {
-  Alert,
-  Animated,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import Ionicons from "@expo/vector-icons/Ionicons";
+import { type Href, router, useFocusEffect } from "expo-router";
+import { useCallback, useState } from "react";
+import { Pressable, StyleSheet, View } from "react-native";
+
+import { apiRequest } from "@/lib/api";
+import { AppText } from "@/ui/AppText";
+import { tapHaptic } from "@/ui/haptics";
+import { Screen } from "@/ui/Screen";
+import { colors, radius, spacing } from "@/ui/theme";
+
+const START_SIZE = 190;
 
 export default function HomeScreen() {
-  const startScale = useRef(new Animated.Value(1)).current;
-  const historyScale = useRef(new Animated.Value(1)).current;
-  const deviceScale = useRef(new Animated.Value(1)).current;
-  const [loggingOut, setLoggingOut] = useState(false);
+  const [userName, setUserName] = useState<string | null>(null);
 
-  const animatePress = (scale: Animated.Value, pressed: boolean) => {
-    Animated.spring(scale, {
-      toValue: pressed ? 0.96 : 1,
-      useNativeDriver: true,
-      speed: 20,
-      bounciness: 6,
-    }).start();
-  };
+  // Runs every time Home comes back into view, so a name changed on the
+  // Profile screen shows up straight away.
+  useFocusEffect(
+    useCallback(() => {
+      apiRequest("/me", { auth: true })
+        .then((me) => setUserName(me.full_name ?? me.email))
+        .catch(() => {});
+    }, []),
+  );
 
-  const handleLogout = () => {
-    Alert.alert("Log Out", "Are you sure you want to log out?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Log Out",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            setLoggingOut(true);
-            await clearSession();
-            router.replace("/login");
-          } catch {
-            setLoggingOut(false);
-            Alert.alert("Error", "Could not log out. Please try again.");
-          }
-        },
-      },
-    ]);
+  const initial = userName ? userName.charAt(0).toUpperCase() : null;
+
+  const open = (href: Href) => {
+    tapHaptic();
+    router.push(href);
   };
 
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>OS QUIZ</Text>
-        <View style={styles.titleLine} />
-        <Text style={styles.subtitle}>
-          Test your Operating Systems knowledge
-        </Text>
-      </View>
-
-      <View style={styles.buttonContainer}>
-        <Animated.View style={{ transform: [{ scale: startScale }] }}>
-          <Pressable
-            style={styles.startButton}
-            onPress={() => router.push("/quizInit")}
-            onPressIn={() => animatePress(startScale, true)}
-            onPressOut={() => animatePress(startScale, false)}
-          >
-            <Text style={styles.startButtonText}>START QUIZ</Text>
-            <Text style={styles.arrow}>→</Text>
-          </Pressable>
-        </Animated.View>
-
-        <Animated.View style={{ transform: [{ scale: historyScale }] }}>
-          <Pressable
-            style={styles.secondaryButton}
-            onPress={() => router.push("/history")}
-            onPressIn={() => animatePress(historyScale, true)}
-            onPressOut={() => animatePress(historyScale, false)}
-          >
-            <Text style={styles.secondaryButtonText}>QUIZ HISTORY</Text>
-          </Pressable>
-        </Animated.View>
-
-        <Animated.View style={{ transform: [{ scale: deviceScale }] }}>
-          <Pressable
-            style={styles.secondaryButton}
-            onPress={() => router.push("/device")}
-            onPressIn={() => animatePress(deviceScale, true)}
-            onPressOut={() => animatePress(deviceScale, false)}
-          >
-            <Text style={styles.secondaryButtonText}>DEVICE INFO</Text>
-          </Pressable>
-        </Animated.View>
+    <Screen>
+      {/* TITLE + PROFILE BUTTON */}
+      <View style={styles.topBar}>
+        <AppText variant="title">OS Quiz App</AppText>
 
         <Pressable
-          style={[styles.logoutButton, loggingOut && { opacity: 0.5 }]}
-          onPress={handleLogout}
-          disabled={loggingOut}
+          accessibilityRole="button"
+          accessibilityLabel="Profile"
+          hitSlop={8}
+          onPress={() => open("/profile")}
+          style={({ pressed }) => [styles.profileButton, pressed && styles.pressed]}
         >
-          <Text style={styles.logoutButtonText}>
-            {loggingOut ? "LOGGING OUT..." : "LOG OUT"}
-          </Text>
+          {initial ? (
+            <AppText variant="bodyStrong">{initial}</AppText>
+          ) : (
+            <Ionicons name="person-outline" size={18} color={colors.text} />
+          )}
         </Pressable>
       </View>
 
-      <Text style={styles.footer}>OPERATING SYSTEMS • QUIZ APP</Text>
-    </View>
+      {/* START QUIZ (big round button in the middle) */}
+      <View style={styles.center}>
+        <View style={styles.startRing}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Start quiz"
+            onPress={() => open("/quizInit")}
+            style={({ pressed }) => [
+              styles.startButton,
+              pressed && styles.startButtonPressed,
+            ]}
+          >
+            <Ionicons name="play" size={56} color="#FFFFFF" style={styles.playIcon} />
+          </Pressable>
+        </View>
+
+        <AppText variant="heading" style={styles.startLabel}>
+          Start Quiz
+        </AppText>
+        <AppText variant="small" tone="secondary">
+          Choose topics and difficulty
+        </AppText>
+
+        {/* PERFORMANCE + HISTORY */}
+        <View style={styles.shortcuts}>
+          <Shortcut label="Performance" onPress={() => open("/performance")} />
+          <Shortcut label="Quiz History" onPress={() => open("/history")} />
+        </View>
+      </View>
+    </Screen>
+  );
+}
+
+function Shortcut({ label, onPress }: { label: string; onPress: () => void }) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [styles.shortcut, pressed && styles.shortcutPressed]}
+    >
+      <AppText style={styles.shortcutText}>{label}</AppText>
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#0B1220",
-    paddingHorizontal: 25,
-    justifyContent: "space-between",
-    paddingTop: 120,
-    paddingBottom: 35,
-  },
-  header: {
-    alignItems: "center",
-  },
-  title: {
-    color: "#FFFFFF",
-    fontSize: 42,
-    fontWeight: "bold",
-    letterSpacing: 4,
-  },
-  titleLine: {
-    width: 55,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: "#3B82F6",
-    marginTop: 12,
-  },
-  subtitle: {
-    color: "#A8B3C7",
-    fontSize: 15,
-    textAlign: "center",
-    marginTop: 14,
-  },
-  buttonContainer: {
-    width: "100%",
-    gap: 14,
-  },
-  startButton: {
-    height: 62,
-    backgroundColor: "#3B82F6",
-    borderRadius: 14,
+  topBar: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    shadowColor: "#3B82F6",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 10,
-    elevation: 6,
+    justifyContent: "space-between",
+    marginTop: spacing.sm,
   },
-  startButtonText: {
-    color: "#FFFFFF",
-    fontSize: 17,
-    fontWeight: "bold",
-    letterSpacing: 1,
-  },
-  arrow: {
-    color: "#FFFFFF",
-    fontSize: 24,
-    marginLeft: 12,
-    marginTop: -2,
-  },
-  secondaryButton: {
-    height: 56,
-    backgroundColor: "#17233A",
-    borderRadius: 14,
-    justifyContent: "center",
-    alignItems: "center",
+  profileButton: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: "#263653",
+    borderColor: colors.border,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  secondaryButtonText: {
-    color: "#FFFFFF",
+  pressed: {
+    opacity: 0.7,
+  },
+  center: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingBottom: spacing.xxl,
+  },
+  // A faint ring around the start button
+  startRing: {
+    width: START_SIZE + 28,
+    height: START_SIZE + 28,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  startButton: {
+    width: START_SIZE,
+    height: START_SIZE,
+    borderRadius: radius.pill,
+    backgroundColor: colors.accent,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+  },
+  startButtonPressed: {
+    backgroundColor: colors.accentPressed,
+    transform: [{ scale: 0.97 }],
+  },
+  playIcon: {
+    marginLeft: 6, // the play triangle looks off-centre without this
+  },
+  startLabel: {
+    marginTop: spacing.xl,
+    marginBottom: spacing.xs,
+  },
+  shortcuts: {
+    flexDirection: "row",
+    gap: spacing.md,
+    alignSelf: "stretch",
+    marginTop: spacing.xxl + spacing.xl,
+  },
+  shortcut: {
+    flex: 1,
+    height: 50,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+  },
+  shortcutPressed: {
+    backgroundColor: colors.surface,
+    borderColor: colors.accent,
+  },
+  shortcutText: {
+    color: colors.text,
     fontSize: 15,
     fontWeight: "600",
-    letterSpacing: 1,
-  },
-  logoutButton: {
-    height: 52,
-    backgroundColor: "#2A1925",
-    borderRadius: 14,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#713047",
-  },
-  logoutButtonText: {
-    color: "#F87171",
-    fontSize: 14,
-    fontWeight: "bold",
-    letterSpacing: 1,
-  },
-  footer: {
-    color: "#52617A",
-    fontSize: 11,
-    textAlign: "center",
-    letterSpacing: 1,
+    letterSpacing: 0.2,
   },
 });

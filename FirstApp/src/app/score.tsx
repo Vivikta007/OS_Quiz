@@ -1,179 +1,251 @@
-import { router, useLocalSearchParams } from "expo-router";
-import { useRef } from "react";
-import { Animated, Pressable, StyleSheet, Text, View } from "react-native";
+import Ionicons from "@expo/vector-icons/Ionicons";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { type ComponentProps, useCallback } from "react";
+import { BackHandler, StyleSheet, View } from "react-native";
+
+import { goHome } from "@/lib/navigation";
+import { AppText } from "@/ui/AppText";
+import { Button } from "@/ui/Button";
+import { Card } from "@/ui/Card";
+import { Screen } from "@/ui/Screen";
+import { colors, radius, spacing } from "@/ui/theme";
+
+type IconName = ComponentProps<typeof Ionicons>["name"];
+
+type AnswerRecord = {
+  selectedAnswer: string;
+  correctAnswer: string;
+};
+
+// The headline message and colour depend on how well the quiz went
+function resultFor(percent: number) {
+  if (percent >= 80) {
+    return {
+      title: "Excellent work!",
+      message: "You really know this material.",
+      color: colors.success,
+      soft: colors.successSoft,
+      icon: "trophy-outline" as IconName,
+    };
+  }
+  if (percent >= 50) {
+    return {
+      title: "Good effort",
+      message: "Review the ones you missed to lock them in.",
+      color: colors.accent,
+      soft: colors.accentSoft,
+      icon: "thumbs-up-outline" as IconName,
+    };
+  }
+  return {
+    title: "Keep practising",
+    message: "Review your answers - every attempt makes it stick.",
+    color: colors.warning,
+    soft: colors.warningSoft,
+    icon: "barbell-outline" as IconName,
+  };
+}
 
 export default function ScoreScreen() {
-  const { score, total, answers, topics, difficulty } = useLocalSearchParams();
+  const { score, total, answers, topics, difficulty, questionCount } =
+    useLocalSearchParams<{
+      score: string;
+      total: string;
+      answers: string;
+      topics: string;
+      difficulty: string;
+      questionCount: string;
+    }>();
 
-  const restartScale = useRef(new Animated.Value(1)).current;
-  const reviewScale = useRef(new Animated.Value(1)).current;
-  const homeScale = useRef(new Animated.Value(1)).current;
+  // Android's back button goes Home too - going "back" from the results
+  // would land on the quiz setup screen, which is confusing.
+  useFocusEffect(
+    useCallback(() => {
+      const subscription = BackHandler.addEventListener(
+        "hardwareBackPress",
+        () => {
+          goHome();
+          return true;
+        },
+      );
 
-  const animatePress = (scale: Animated.Value, pressed: boolean) => {
-    Animated.spring(scale, {
-      toValue: pressed ? 0.96 : 1,
-      useNativeDriver: true,
-      speed: 20,
-      bounciness: 6,
-    }).start();
-  };
+      return () => subscription.remove();
+    }, []),
+  );
+
+  const scoreNumber = Number(score) || 0;
+  const totalNumber = Number(total) || 0;
+  const percent = totalNumber ? Math.round((scoreNumber / totalNumber) * 100) : 0;
+  const result = resultFor(percent);
+
+  let answerList: AnswerRecord[] = [];
+  try {
+    answerList = answers ? JSON.parse(answers) : [];
+  } catch {
+    answerList = [];
+  }
+  const skipped = answerList.filter((answer) => !answer.selectedAnswer).length;
+  const wrong = totalNumber - scoreNumber - skipped;
 
   return (
-    <View style={styles.container}>
-      <View style={styles.content}>
-        <Text style={styles.title}>Quiz Completed!</Text>
+    <Screen
+      scroll
+      footer={
+        <>
+          <Button
+            title="Review answers"
 
-        <Text style={styles.scoreLabel}>YOUR SCORE</Text>
+            onPress={() =>
+              router.push({ pathname: "/review", params: { answers } })
+            }
+          />
+          <View style={styles.footerRow}>
+            <Button
+              title="Try again"
+              variant="secondary"
+              onPress={() =>
+                router.replace({
+                  pathname: "/quiz",
+                  params: { topics, difficulty, questionCount },
+                })
+              }
+              style={styles.flex}
+            />
+            <Button
+              title="Home"
+              variant="secondary"
+              onPress={goHome}
+              style={styles.flex}
+            />
+          </View>
+        </>
+      }
+    >
+      <View style={styles.hero}>
+        <View style={[styles.iconCircle, { backgroundColor: result.soft }]}>
+          <Ionicons name={result.icon} size={30} color={result.color} />
+        </View>
 
-        <Text style={styles.number}>
-          {score} / {total}
-        </Text>
+        <AppText variant="title" center>
+          {result.title}
+        </AppText>
+        <AppText variant="small" tone="secondary" center style={styles.message}>
+          {result.message}
+        </AppText>
 
-        <View style={styles.scoreLine} />
+        {/* SCORE */}
+        <View style={[styles.scoreRing, { borderColor: result.color }]}>
+          <AppText variant="display" style={styles.percent}>
+            {percent}%
+          </AppText>
+          <AppText variant="small" tone="secondary">
+            {scoreNumber} of {totalNumber} correct
+          </AppText>
+        </View>
       </View>
 
-      <View style={styles.buttons}>
-        {/* RESTART QUIZ */}
-        <Animated.View style={{ transform: [{ scale: restartScale }] }}>
-          <Pressable
-            style={styles.primaryButton}
-            onPress={() =>
-              router.replace({
-                pathname: "/quiz",
-                params: {
-                  topics,
-                  difficulty,
-                },
-              })
-            }
-            onPressIn={() => animatePress(restartScale, true)}
-            onPressOut={() => animatePress(restartScale, false)}
-          >
-            <Text style={styles.primaryButtonText}>RESTART QUIZ</Text>
-            <Text style={styles.arrow}>→</Text>
-          </Pressable>
-        </Animated.View>
+      {/* BREAKDOWN - icon + label + number, so it never relies on colour alone */}
+      <Card style={styles.breakdown}>
+        <Stat
+          icon="checkmark-circle"
+          color={colors.success}
+          label="Correct"
+          value={scoreNumber}
+        />
+        <View style={styles.divider} />
+        <Stat icon="close-circle" color={colors.danger} label="Wrong" value={wrong} />
+        <View style={styles.divider} />
+        <Stat
+          icon="remove-circle"
+          color={colors.textMuted}
+          label="Skipped"
+          value={skipped}
+        />
+      </Card>
 
-        {/* REVIEW ANSWERS */}
-        <Animated.View style={{ transform: [{ scale: reviewScale }] }}>
-          <Pressable
-            style={styles.secondaryButton}
-            onPress={() =>
-              router.push({
-                pathname: "/review",
-                params: {
-                  answers,
-                },
-              })
-            }
-            onPressIn={() => animatePress(reviewScale, true)}
-            onPressOut={() => animatePress(reviewScale, false)}
-          >
-            <Text style={styles.secondaryButtonText}>REVIEW ANSWERS</Text>
-          </Pressable>
-        </Animated.View>
+      <AppText variant="caption" tone="muted" center style={styles.meta}>
+        {difficulty} · saved to your history
+      </AppText>
+    </Screen>
+  );
+}
 
-        {/* BACK TO HOME */}
-        <Animated.View style={{ transform: [{ scale: homeScale }] }}>
-          <Pressable
-            style={styles.secondaryButton}
-            onPress={() => router.replace("/")}
-            onPressIn={() => animatePress(homeScale, true)}
-            onPressOut={() => animatePress(homeScale, false)}
-          >
-            <Text style={styles.secondaryButtonText}>BACK TO HOME</Text>
-          </Pressable>
-        </Animated.View>
-      </View>
+function Stat({
+  icon,
+  color,
+  label,
+  value,
+}: {
+  icon: IconName;
+  color: string;
+  label: string;
+  value: number;
+}) {
+  return (
+    <View style={styles.stat}>
+      <Ionicons name={icon} size={20} color={color} />
+      <AppText variant="heading">{value}</AppText>
+      <AppText variant="caption" tone="secondary">
+        {label}
+      </AppText>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  flex: {
     flex: 1,
-    backgroundColor: "#0B1220",
-    paddingHorizontal: 25,
-    paddingTop: 90,
-    paddingBottom: 55,
-    justifyContent: "space-between",
   },
-
-  content: {
+  hero: {
     alignItems: "center",
+    paddingTop: spacing.xxl,
   },
-
-  title: {
-    color: "#FFFFFF",
-    fontSize: 30,
-    fontWeight: "bold",
-    marginBottom: 55,
+  iconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: spacing.lg,
   },
-
-  scoreLabel: {
-    color: "#A8B3C7",
-    fontSize: 14,
-    fontWeight: "600",
-    letterSpacing: 2,
-    marginBottom: 12,
+  message: {
+    marginTop: spacing.sm,
+    maxWidth: 280,
   },
-
-  number: {
-    color: "#FFFFFF",
-    fontSize: 52,
-    fontWeight: "bold",
+  scoreRing: {
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    borderWidth: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: spacing.xxl,
+    marginBottom: spacing.xxl,
+    backgroundColor: colors.surface,
   },
-
-  scoreLine: {
-    width: 55,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: "#3B82F6",
-    marginTop: 18,
+  percent: {
+    fontSize: 44,
   },
-
-  buttons: {
-    width: "100%",
-    gap: 14,
-  },
-
-  primaryButton: {
-    height: 60,
-    backgroundColor: "#3B82F6",
-    borderRadius: 14,
+  breakdown: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    paddingVertical: spacing.lg,
   },
-
-  primaryButtonText: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "bold",
-    letterSpacing: 1,
-  },
-
-  arrow: {
-    color: "#FFFFFF",
-    fontSize: 23,
-    marginLeft: 12,
-    marginTop: -2,
-  },
-
-  secondaryButton: {
-    height: 55,
-    backgroundColor: "#17233A",
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#263653",
-    justifyContent: "center",
+  stat: {
+    flex: 1,
     alignItems: "center",
+    gap: 2,
   },
-
-  secondaryButtonText: {
-    color: "#FFFFFF",
-    fontSize: 14,
-    fontWeight: "600",
-    letterSpacing: 1,
+  divider: {
+    width: StyleSheet.hairlineWidth,
+    alignSelf: "stretch",
+    backgroundColor: colors.border,
+  },
+  meta: {
+    marginTop: spacing.lg,
+  },
+  footerRow: {
+    flexDirection: "row",
+    gap: spacing.md,
   },
 });
