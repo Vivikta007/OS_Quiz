@@ -6,6 +6,7 @@ import { apiRequest } from "@/lib/api";
 import { goBack } from "@/lib/navigation";
 import { AuthHeader, LinkRow } from "@/ui/Auth";
 import { Button } from "@/ui/Button";
+import { Reveal } from "@/ui/Reveal";
 import { Screen } from "@/ui/Screen";
 import { TextField } from "@/ui/TextField";
 import { spacing } from "@/ui/theme";
@@ -91,9 +92,9 @@ export default function RegisterScreen() {
   return (
     <Screen scroll keyboard>
       <View style={styles.content}>
-        <AuthHeader subtitle="Create your account to get started" />
+        <AuthHeader />
 
-        <View style={styles.form}>
+        <Reveal order={3} style={styles.form}>
           <TextField
             label="Full name"
             placeholder="Your name"
@@ -152,7 +153,7 @@ export default function RegisterScreen() {
             onPress={() => goBack("/login")}
             disabled={loading}
           />
-        </View>
+        </Reveal>
       </View>
     </Screen>
   );

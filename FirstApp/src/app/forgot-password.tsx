@@ -6,6 +6,7 @@ import { apiRequest } from "@/lib/api";
 import { goBack } from "@/lib/navigation";
 import { AuthHeader, LinkRow } from "@/ui/Auth";
 import { Button } from "@/ui/Button";
+import { Reveal } from "@/ui/Reveal";
 import { Header } from "@/ui/Header";
 import { Screen } from "@/ui/Screen";
 import { TextField } from "@/ui/TextField";
@@ -115,7 +116,7 @@ export default function ForgotPasswordScreen() {
           }
         />
 
-        <View style={styles.form}>
+        <Reveal order={3} style={styles.form}>
           {step === "email" ? (
             <>
               <TextField
@@ -196,7 +197,7 @@ export default function ForgotPasswordScreen() {
             onPress={() => goBack("/login")}
             disabled={loading}
           />
-        </View>
+        </Reveal>
       </View>
     </Screen>
   );

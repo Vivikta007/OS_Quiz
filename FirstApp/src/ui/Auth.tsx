@@ -1,26 +1,37 @@
 import { Image } from "expo-image";
-import { Pressable, StyleSheet, View } from "react-native";
+import { Pressable, View } from "react-native";
 
 import { AppText } from "@/ui/AppText";
-import { colors, layout, spacing } from "@/ui/theme";
+import { Reveal } from "@/ui/Reveal";
+import { fonts, layout, spacing } from "@/ui/theme";
+import { createStyles } from "@/ui/ThemeProvider";
 
 // Shared pieces of the logged-out screens (login, register, forgot password)
 
-// App logo, name and a one-line subtitle
-export function AuthHeader({ subtitle }: { subtitle: string }) {
+// App logo, name and an optional line of instructions
+export function AuthHeader({ subtitle }: { subtitle?: string }) {
+  const styles = useStyles();
   return (
     <View style={styles.header}>
-      <Image
-        source={require("@/assets/images/splash-icon.png")}
-        style={styles.logo}
-        accessibilityIgnoresInvertColors
-      />
-      <AppText variant="title" center>
-        OS Quiz
-      </AppText>
-      <AppText variant="small" tone="secondary" center>
-        {subtitle}
-      </AppText>
+      <Reveal order={0}>
+        <Image
+          source={require("@/assets/images/splash-icon.png")}
+          style={styles.logo}
+          accessibilityIgnoresInvertColors
+        />
+      </Reveal>
+      <Reveal order={1}>
+        <AppText variant="title" center>
+          OS Quiz
+        </AppText>
+      </Reveal>
+      {subtitle && (
+        <Reveal order={2}>
+          <AppText variant="small" tone="secondary" center>
+            {subtitle}
+          </AppText>
+        </Reveal>
+      )}
     </View>
   );
 }
@@ -37,6 +48,7 @@ export function LinkRow({
   onPress: () => void;
   disabled?: boolean;
 }) {
+  const styles = useStyles();
   return (
     <View style={styles.linkRow}>
       <AppText variant="small" tone="secondary">
@@ -56,15 +68,15 @@ export function LinkRow({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createStyles((colors) => ({
   header: {
     alignItems: "center",
-    gap: spacing.sm,
+    gap: spacing.xs,
     marginBottom: spacing.xxl,
   },
   logo: {
-    width: 88,
-    height: 88,
+    width: 68,
+    height: 68,
     marginBottom: spacing.sm,
   },
   linkRow: {
@@ -76,6 +88,6 @@ const styles = StyleSheet.create({
   },
   link: {
     color: colors.accentText,
-    fontWeight: "700",
+    fontFamily: fonts.bodyBold,
   },
-});
+}));

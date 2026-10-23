@@ -5,18 +5,21 @@ import {
   ActivityIndicator,
   FlatList,
   RefreshControl,
-  StyleSheet,
   View,
 } from "react-native";
 
 import { ApiError, apiRequest } from "@/lib/api";
 import { AppText } from "@/ui/AppText";
+import { Bullet } from "@/ui/Brand";
 import { Button } from "@/ui/Button";
 import { Card } from "@/ui/Card";
 import { Header } from "@/ui/Header";
+import { Reveal } from "@/ui/Reveal";
 import { Screen } from "@/ui/Screen";
+import { TabBar } from "@/ui/TabBar";
 import { StateView } from "@/ui/StateView";
-import { colors, radius, spacing } from "@/ui/theme";
+import { type Palette, spacing } from "@/ui/theme";
+import { createStyles, useTheme } from "@/ui/ThemeProvider";
 
 // Quiz history lives in Supabase (PostgreSQL), not on the device.
 // The backend only returns the logged-in user's attempts, so history
@@ -26,28 +29,29 @@ type QuizAttempt = {
   id: number;
   score: number;
   total_questions: number;
-  topics: string[];
+  topics: string[]; // only topics the user answered questions in
   difficulty: string;
   created_at: string;
 };
 
-function scoreColor(percent: number) {
+function scoreColor(colors: Palette, percent: number) {
   if (percent >= 70) return colors.success;
-  if (percent >= 40) return colors.warning;
-  return colors.danger;
+  if (percent >= 50) return colors.accent;
+  return colors.warning;
 }
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, {
     day: "numeric",
     month: "short",
-    year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
   });
 }
 
 export default function HistoryScreen() {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const [history, setHistory] = useState<QuizAttempt[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -114,11 +118,11 @@ export default function HistoryScreen() {
     }
   };
 
-  const header = <Header title="Quiz history" />;
+  const header = <Header title="My quizzes" hideBack />;
 
   if (loading) {
     return (
-      <Screen header={header}>
+      <Screen tabBar={<TabBar active="history" />} header={header}>
         <StateView loading />
       </Screen>
     );
@@ -126,9 +130,8 @@ export default function HistoryScreen() {
 
   if (error && history.length === 0) {
     return (
-      <Screen header={header}>
+      <Screen tabBar={<TabBar active="history" />} header={header}>
         <StateView
-          icon="cloud-offline-outline"
           tone="danger"
           title="Couldn't load your history"
           message={error}
@@ -141,9 +144,8 @@ export default function HistoryScreen() {
 
   if (history.length === 0) {
     return (
-      <Screen header={header}>
+      <Screen tabBar={<TabBar active="history" />} header={header}>
         <StateView
-          icon="time-outline"
           title="No quizzes yet"
           message="Every quiz you finish is saved here, so you can review your answers later."
         >
@@ -157,7 +159,7 @@ export default function HistoryScreen() {
   }
 
   return (
-    <Screen header={header}>
+    <Screen tabBar={<TabBar active="history" />} header={header}>
       {error && (
         <AppText variant="small" tone="danger" center style={styles.error}>
           {error}
@@ -177,42 +179,44 @@ export default function HistoryScreen() {
             progressBackgroundColor={colors.surface}
           />
         }
-        renderItem={({ item }) => {
+        renderItem={({ item, index }) => {
           const percent = item.total_questions
             ? Math.round((item.score / item.total_questions) * 100)
             : 0;
-          const color = scoreColor(percent);
+          const color = scoreColor(colors, percent);
 
           return (
-            <Card
-              onPress={() => openReview(item.id)}
-              accessibilityLabel={`${item.score} of ${item.total_questions}, ${item.difficulty}. Open review`}
-              style={styles.item}
-            >
-              <View style={[styles.badge, { borderColor: color }]}>
-                <AppText variant="bodyStrong" style={{ color }}>
-                  {percent}%
-                </AppText>
-              </View>
+            // Only the first screenful staggers in; later rows just appear
+            <Reveal order={Math.min(index, 8)}>
+              <Card
+                onPress={() => openReview(item.id)}
+                accessibilityLabel={`${item.score} of ${item.total_questions}, ${item.difficulty}. Open review`}
+                style={styles.item}
+              >
+                <Bullet style={{ backgroundColor: color }} />
 
-              <View style={styles.itemText}>
-                <AppText variant="bodyStrong">
-                  {item.score} / {item.total_questions} correct
-                </AppText>
-                <AppText variant="small" tone="accent" numberOfLines={1}>
-                  {item.difficulty} · {item.topics.join(", ")}
-                </AppText>
-                <AppText variant="caption" tone="muted">
-                  {formatDate(item.created_at)}
-                </AppText>
-              </View>
+                <View style={styles.itemText}>
+                  <AppText variant="bodyStrong" numberOfLines={1}>
+                    {item.topics.length > 0
+                      ? item.topics.join(", ")
+                      : "No questions answered"}
+                  </AppText>
+                  <AppText variant="caption" tone="muted">
+                    {item.difficulty} · {formatDate(item.created_at)}
+                  </AppText>
+                </View>
 
-              {openingId === item.id ? (
-                <ActivityIndicator size="small" color={colors.accent} />
-              ) : (
-                <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-              )}
-            </Card>
+                <AppText variant="heading" style={{ color }}>
+                  {item.score}/{item.total_questions}
+                </AppText>
+
+                {openingId === item.id ? (
+                  <ActivityIndicator size="small" color={colors.accent} />
+                ) : (
+                  <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+                )}
+              </Card>
+            </Reveal>
           );
         }}
       />
@@ -220,12 +224,12 @@ export default function HistoryScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createStyles((colors) => ({
   error: {
     marginBottom: spacing.sm,
   },
   list: {
-    gap: spacing.md,
+    gap: spacing.sm,
     paddingBottom: spacing.xxl,
   },
   item: {
@@ -233,16 +237,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.md,
   },
-  badge: {
-    width: 56,
-    height: 56,
-    borderRadius: radius.pill,
-    borderWidth: 2,
-    alignItems: "center",
-    justifyContent: "center",
-  },
   itemText: {
     flex: 1,
     gap: 2,
   },
-});
+}));

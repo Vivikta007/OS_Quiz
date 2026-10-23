@@ -1,7 +1,12 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
+import {
+  ActivityIndicator,
+  Pressable,
+  TextInput,
+  View,
+} from "react-native";
 
 import { apiRequest } from "@/lib/api";
 import { AppText } from "@/ui/AppText";
@@ -9,8 +14,10 @@ import { Button } from "@/ui/Button";
 import { SegmentedControl } from "@/ui/Choice";
 import { selectHaptic } from "@/ui/haptics";
 import { Header } from "@/ui/Header";
+import { Bullet } from "@/ui/Brand";
 import { Screen } from "@/ui/Screen";
-import { colors, radius, spacing } from "@/ui/theme";
+import { fonts, layout, radius, spacing, typography } from "@/ui/theme";
+import { createStyles, useTheme } from "@/ui/ThemeProvider";
 
 const difficulties = ["Easy", "Medium", "Hard", "Adaptive"] as const;
 type Difficulty = (typeof difficulties)[number];
@@ -44,13 +51,20 @@ function available(info: TopicInfo, difficulty: Difficulty) {
 }
 
 export default function QuizInitScreen() {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const [topics, setTopics] = useState<TopicInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [selected, setSelected] = useState<string[]>([]);
+  // Home can open this screen with one topic already picked
+  const { topic: presetTopic } = useLocalSearchParams<{ topic?: string }>();
+  const [selected, setSelected] = useState<string[]>(
+    presetTopic ? [presetTopic] : [],
+  );
   const [difficulty, setDifficulty] = useState<Difficulty>("Adaptive");
   const [questionCount, setQuestionCount] = useState<number>(10);
+  const [search, setSearch] = useState("");
 
   const loadTopics = () =>
     apiRequest("/topics", { auth: true })
@@ -77,13 +91,15 @@ export default function QuizInitScreen() {
   const chosen = selected.filter((name) =>
     usable.some((info) => info.topic === name),
   );
-  const allSelected = usable.length > 0 && chosen.length === usable.length;
-
-  const totalAvailable = usable
-    .filter((info) => chosen.includes(info.topic))
-    .reduce((sum, info) => sum + available(info, difficulty), 0);
-
-  const finalCount = Math.min(questionCount, totalAvailable);
+  // The search only hides rows - topics picked before searching stay picked
+  const query = search.trim().toLowerCase();
+  const visible = query
+    ? topics.filter((info) => info.topic.toLowerCase().includes(query))
+    : topics;
+  const visibleUsable = usable.filter((info) => visible.includes(info));
+  const allSelected =
+    visibleUsable.length > 0 &&
+    visibleUsable.every((info) => chosen.includes(info.topic));
 
   const toggleTopic = (topic: string) => {
     selectHaptic();
@@ -94,9 +110,15 @@ export default function QuizInitScreen() {
     );
   };
 
+  // Select / clear every topic in view (all of them, or the search results)
   const toggleAll = () => {
     selectHaptic();
-    setSelected(allSelected ? [] : usable.map((info) => info.topic));
+    const names = visibleUsable.map((info) => info.topic);
+    setSelected((current) =>
+      allSelected
+        ? current.filter((name) => !names.includes(name))
+        : [...new Set([...current, ...names])],
+    );
   };
 
   const startQuiz = () => {
@@ -115,7 +137,7 @@ export default function QuizInitScreen() {
   const summary =
     chosen.length === 0
       ? "Select at least one topic"
-      : `${finalCount} questions · ${difficulty} · ${chosen.length} ${chosen.length === 1 ? "topic" : "topics"}`;
+      : `${difficulty} · ${chosen.length} ${chosen.length === 1 ? "topic" : "topics"}`;
 
   return (
     <Screen
@@ -152,14 +174,41 @@ export default function QuizInitScreen() {
         <AppText variant="label" tone="muted">
           Topics
         </AppText>
-        {usable.length > 0 && (
+        {visibleUsable.length > 0 && (
           <Pressable onPress={toggleAll} hitSlop={10}>
             <AppText variant="small" tone="accent" style={styles.link}>
-              {allSelected ? "Clear all" : "Select all"}
+              {allSelected
+                ? query ? "Clear these" : "Clear all"
+                : query ? "Select these" : "Select all"}
             </AppText>
           </Pressable>
         )}
       </View>
+
+      {topics.length > 0 && (
+        <View style={styles.searchBox}>
+          <Ionicons name="search" size={18} color={colors.textMuted} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search topics"
+            placeholderTextColor={colors.textMuted}
+            value={search}
+            onChangeText={setSearch}
+            autoCorrect={false}
+            returnKeyType="search"
+          />
+          {search.length > 0 && (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Clear search"
+              hitSlop={layout.hitSlop}
+              onPress={() => setSearch("")}
+            >
+              <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+            </Pressable>
+          )}
+        </View>
+      )}
 
       {loading ? (
         <View style={styles.listState}>
@@ -172,9 +221,15 @@ export default function QuizInitScreen() {
           </AppText>
           <Button title="Try again" variant="secondary" size="sm" onPress={retry} />
         </View>
+      ) : visible.length === 0 ? (
+        <AppText variant="small" tone="secondary" center style={styles.noMatch}>
+          {topics.length === 0
+            ? "No topics yet."
+            : `No topics match "${search.trim()}".`}
+        </AppText>
       ) : (
         <View style={styles.list}>
-          {topics.map((info, index) => {
+          {visible.map((info, index) => {
             const disabled = available(info, difficulty) === 0;
             const isChecked = !disabled && selected.includes(info.topic);
 
@@ -191,6 +246,15 @@ export default function QuizInitScreen() {
                   pressed && styles.rowPressed,
                 ]}
               >
+                <Bullet />
+                <AppText
+                  variant="bodyStrong"
+                  tone={disabled ? "muted" : "default"}
+                  style={styles.rowLabel}
+                  numberOfLines={1}
+                >
+                  {info.topic}
+                </AppText>
                 <View
                   style={[
                     styles.checkbox,
@@ -199,18 +263,9 @@ export default function QuizInitScreen() {
                   ]}
                 >
                   {isChecked && (
-                    <Ionicons name="checkmark" size={15} color="#FFFFFF" />
+                    <Ionicons name="checkmark" size={15} color={colors.onAccent} />
                   )}
                 </View>
-
-                <AppText
-                  variant="body"
-                  tone={disabled ? "muted" : "default"}
-                  style={styles.rowLabel}
-                >
-                  {info.topic}
-                </AppText>
-
               </Pressable>
             );
           })}
@@ -230,9 +285,9 @@ export default function QuizInitScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createStyles((colors) => ({
   firstLabel: {
-    marginTop: spacing.md,
+    marginTop: spacing.sm,
     marginBottom: spacing.md,
   },
   hint: {
@@ -246,7 +301,28 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   link: {
-    fontWeight: "600",
+    fontFamily: fonts.bodySemiBold,
+  },
+  searchBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    minHeight: 48,
+    paddingHorizontal: spacing.md,
+    marginBottom: spacing.md,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+  },
+  searchInput: {
+    ...typography.body,
+    flex: 1,
+    color: colors.text,
+    paddingVertical: spacing.sm,
+  },
+  noMatch: {
+    paddingVertical: spacing.xl,
   },
   sectionLabel: {
     marginTop: spacing.xxl,
@@ -259,7 +335,7 @@ const styles = StyleSheet.create({
   },
   list: {
     backgroundColor: colors.surface,
-    borderRadius: radius.md,
+    borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: colors.border,
     overflow: "hidden",
@@ -268,11 +344,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
-    paddingHorizontal: spacing.lg,
-    minHeight: 52,
+    paddingHorizontal: spacing.md + 2,
+    minHeight: 56,
   },
   rowDivider: {
-    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopWidth: 1,
     borderTopColor: colors.border,
   },
   rowPressed: {
@@ -284,7 +360,7 @@ const styles = StyleSheet.create({
   checkbox: {
     width: 22,
     height: 22,
-    borderRadius: 6,
+    borderRadius: radius.pill,
     borderWidth: 1.5,
     borderColor: colors.borderStrong,
     alignItems: "center",
@@ -297,4 +373,4 @@ const styles = StyleSheet.create({
   checkboxDisabled: {
     opacity: 0.4,
   },
-});
+}));

@@ -1,21 +1,18 @@
-import Ionicons from "@expo/vector-icons/Ionicons";
-import { StyleSheet, View } from "react-native";
+import { View } from "react-native";
 
 import { goBack } from "@/lib/navigation";
 import { AppText } from "@/ui/AppText";
 import { Button } from "@/ui/Button";
-import { colors, radius, spacing } from "@/ui/theme";
+import { radius, spacing } from "@/ui/theme";
+import { createStyles } from "@/ui/ThemeProvider";
 
 // Shown over the quiz (transparentModal) when the user leaves the app
 // mid-quiz. Resuming just closes this overlay.
 export default function PausedScreen() {
+  const styles = useStyles();
   return (
     <View style={styles.overlay}>
       <View style={styles.card}>
-        <View style={styles.iconCircle}>
-          <Ionicons name="pause" size={28} color={colors.accentText} />
-        </View>
-
         <AppText variant="title" center>
           Quiz paused
         </AppText>
@@ -34,7 +31,7 @@ export default function PausedScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createStyles((colors) => ({
   overlay: {
     flex: 1,
     backgroundColor: colors.overlay,
@@ -48,18 +45,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.md,
     padding: spacing.xl,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
+    borderRadius: radius.lg + 4,
     backgroundColor: colors.surface,
-  },
-  iconCircle: {
-    width: 60,
-    height: 60,
-    borderRadius: radius.pill,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.accentSoft,
   },
   message: {
     marginBottom: spacing.sm,
@@ -67,4 +54,4 @@ const styles = StyleSheet.create({
   button: {
     alignSelf: "stretch",
   },
-});
+}));

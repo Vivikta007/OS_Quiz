@@ -1,0 +1,27 @@
+# Render Blueprint: deploys the FastAPI backend (backend/).
+# Render -> New -> Blueprint -> pick this repo. It asks for the secrets
+# marked "sync: false" - copy them from backend/.env.
+
+services:
+  - type: web
+    name: os-quiz-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    # One worker on purpose: AI generation jobs are kept in memory, so the
+    # app must poll the same process that started them.
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false

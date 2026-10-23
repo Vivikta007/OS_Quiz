@@ -42,12 +42,49 @@ export class ApiError extends Error {
 
 type RequestOptions = {
   method?: "GET" | "POST" | "PATCH" | "DELETE";
+  // Sent as JSON - or pass FormData to upload a file
   body?: unknown;
   // true = this endpoint needs the user to be logged in
   auth?: boolean;
   // How long to wait for slow endpoints (e.g. AI question generation)
   timeoutMs?: number;
 };
+
+type RawResponse = { ok: boolean; status: number; data: any };
+
+// File uploads go through XMLHttpRequest, not fetch. On phones the global
+// fetch is expo/fetch, which can only send Blobs it can read itself - and
+// in Expo Go it isn't allowed to read files picked with the document
+// picker ("Missing 'READ' permission"). React Native's XMLHttpRequest
+// uploads { uri, name, type } files natively, with no such limit.
+function uploadWithXhr(
+  url: string,
+  method: string,
+  headers: Record<string, string>,
+  form: FormData,
+  timeoutMs: number,
+): Promise<RawResponse> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, url);
+    for (const [name, value] of Object.entries(headers)) {
+      xhr.setRequestHeader(name, value);
+    }
+    xhr.timeout = timeoutMs;
+    xhr.onload = () => {
+      let data: any = {};
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch {
+        // Not JSON - keep {}
+      }
+      resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, data });
+    };
+    xhr.onerror = () => reject(new Error("Network error during upload"));
+    xhr.ontimeout = () => reject(new Error("timeout"));
+    xhr.send(form);
+  });
+}
 
 // One HTTP request. No login or retry logic here.
 async function send(
@@ -58,8 +95,10 @@ async function send(
   timeoutMs = REQUEST_TIMEOUT_MS,
 ) {
   const headers: Record<string, string> = {};
+  // A file upload (FormData) sets its own multipart Content-Type
+  const isUpload = body instanceof FormData;
 
-  if (body !== undefined) {
+  if (body !== undefined && !isUpload) {
     headers["Content-Type"] = "application/json";
   }
 
@@ -71,16 +110,41 @@ async function send(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-  let response: Response;
+  let response: RawResponse;
 
   try {
-    response = await fetch(`${getApiUrl()}${path}`, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: controller.signal,
-    });
-  } catch {
+    if (isUpload) {
+      response = await uploadWithXhr(
+        `${getApiUrl()}${path}`,
+        method,
+        headers,
+        body as FormData,
+        timeoutMs,
+      );
+    } else {
+      const raw = await fetch(`${getApiUrl()}${path}`, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: controller.signal,
+      });
+      response = {
+        ok: raw.ok,
+        status: raw.status,
+        data: await raw.json().catch(() => ({})),
+      };
+    }
+  } catch (error) {
+    const timedOut =
+      controller.signal.aborted || (error instanceof Error && error.message === "timeout");
+    if (timedOut) {
+      throw new ApiError(
+        "The server took too long to answer. Check your connection and try again.",
+        0,
+      );
+    }
+    // Shows the real cause in the Expo terminal (e.g. a bad request body)
+    console.warn(`Request to ${path} failed:`, error);
     throw new ApiError(
       `Cannot reach the server at ${getApiUrl()}. Make sure the backend is running.`,
       0,
@@ -89,7 +153,7 @@ async function send(
     clearTimeout(timeout);
   }
 
-  const data = await response.json().catch(() => ({}));
+  const { data } = response;
 
   if (!response.ok) {
     // FastAPI puts its error message in "detail"

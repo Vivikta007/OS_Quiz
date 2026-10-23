@@ -6,8 +6,10 @@ appear in a quiz - the AI can be confidently wrong, so a human has the last
 word on every answer key.
 """
 
+import base64
 import os
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -16,7 +18,7 @@ from dotenv import load_dotenv
 from google import genai
 from pydantic import BaseModel, Field, ValidationError
 
-DEFAULT_MODEL = "gemini-3.8-flash"
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 OPTION_COUNT = 4
 
 # Speed: Gemini's time grows with how much it writes and thinks, so a big
@@ -24,7 +26,8 @@ OPTION_COUNT = 4
 # (15 questions take about as long as 5).
 PART_SIZE = 5
 
-# Speed: less thinking is much faster (5 Hard questions: ~220s at the
+# Speed: less thinking is much faster (measured on Gemini 3.8 Flash, 5 Hard
+# questions: ~220s at the
 # default level, ~117s at medium, ~93s at low). Hard questions keep more
 # thinking because they involve calculations the AI must get right.
 THINKING_LEVEL = {"Easy": "low", "Medium": "low", "Hard": "medium"}
@@ -36,6 +39,10 @@ class GenerationError(Exception):
 
 class GeneratedQuestion(BaseModel):
     question: str = Field(description="The question text. One clear question.")
+    topic: str = Field(
+        default="",
+        description="The Operating Systems topic this question tests, e.g. 'Deadlocks'.",
+    )
     options: list[str] = Field(
         description=f"Exactly {OPTION_COUNT} answer options. Exactly one is correct."
     )
@@ -76,7 +83,48 @@ Difficulty guide:
 - Medium: understanding and comparing concepts, choosing the right technique.
 - Hard: multi-step reasoning, calculations, tracing an algorithm, edge cases."""
 
-CHECKER_INSTRUCTIONS = """You are an Operating Systems expert taking a quiz. For each numbered question, choose the single best option. Work through calculations carefully."""
+CHECKER_INSTRUCTIONS = """You are an Operating Systems expert taking a quiz. For each numbered question, choose the single best option. Work through calculations carefully. If a document is attached, the questions are based on it - answer according to the document."""
+
+
+# The biggest document text sent to Gemini (about 50 pages). Longer text is
+# cut off, so questions only cover the start of very long documents.
+MAX_DOCUMENT_CHARS = 150_000
+
+
+@dataclass
+class Document:
+    """An uploaded document to write questions from. PDFs are sent to
+    Gemini as they are (it reads the layout, tables and scanned pages);
+    other formats are sent as their extracted text."""
+
+    name: str
+    pdf: bytes | None = None
+    text: str | None = None
+
+
+def _with_document(document: Document | None, prompt: str):
+    """The Gemini input: just the prompt, or the document plus the prompt."""
+    if document is None:
+        return prompt
+    if document.pdf is not None:
+        return [
+            {
+                "type": "document",
+                "mime_type": "application/pdf",
+                "data": base64.b64encode(document.pdf).decode("ascii"),
+            },
+            {"type": "text", "text": prompt},
+        ]
+    text = (document.text or "")[:MAX_DOCUMENT_CHARS]
+    return f'Document "{document.name}":\n<<<\n{text}\n>>>\n\n{prompt}'
+
+
+def _tidy_topic(name: str, known_topics: list[str]) -> str:
+    """Tidy spacing, and reuse an existing topic's exact name when the AI
+    wrote it differently ("cpu scheduling" -> "CPU Scheduling")."""
+    name = " ".join(name.split())[:60]
+    known = {topic.lower(): topic for topic in known_topics}
+    return known.get(name.lower(), name)
 
 
 def _client() -> genai.Client:
@@ -92,7 +140,7 @@ def _client() -> genai.Client:
 def _ask(
     client: genai.Client,
     instructions: str,
-    prompt: str,
+    prompt,  # text, or a list of content blocks (see _with_document)
     schema: type[BaseModel],
     thinking: str = "medium",
 ):
@@ -148,19 +196,26 @@ def problems_with(question: GeneratedQuestion) -> list[str]:
 
 
 def generate_questions(
-    topic: str,
+    topic: str | None,
     difficulty: Literal["Easy", "Medium", "Hard"],
     count: int,
     existing_questions: list[str],
     guidance: str = "",
+    document: Document | None = None,
+    known_topics: list[str] | None = None,
 ) -> tuple[list[dict], list[str]]:
     """Write `count` new questions and check each answer key.
+
+    With a `document`, questions are based on it. With topic=None the AI
+    picks each question's topic - an existing one from `known_topics` when
+    it fits, or a new one the document covers.
 
     Returns (questions, skipped). Each question dict is ready to insert,
     with review_note set when the checker disagreed with the writer.
     `skipped` describes questions that failed the rule checks.
     """
     client = _client()
+    known_topics = known_topics or []
     sizes = [min(PART_SIZE, count - start) for start in range(0, count, PART_SIZE)]
 
     # Each part writes and checks its questions on its own thread
@@ -168,7 +223,8 @@ def generate_questions(
         parts = list(pool.map(
             lambda numbered: _write_part(
                 client, topic, difficulty, numbered[1], existing_questions,
-                guidance, part=numbered[0], parts=len(sizes),
+                guidance, document, known_topics,
+                part=numbered[0], parts=len(sizes),
             ),
             enumerate(sizes, start=1),
         ))
@@ -197,39 +253,87 @@ def generate_questions(
     return questions, skipped
 
 
-def _write_part(
-    client: genai.Client,
-    topic: str,
+def _writer_prompt(
+    topic: str | None,
     difficulty: str,
     count: int,
     existing_questions: list[str],
     guidance: str,
+    document: Document | None,
+    known_topics: list[str],
+    part: int,
+    parts: int,
+) -> str:
+    lines = []
+    if document is not None:
+        lines.append(
+            "Base every question on the attached document: each one must be "
+            "answerable from what the document says. If the document has too "
+            "little material, write fewer questions rather than inventing facts."
+        )
+    if topic:
+        lines.append(f"Topic: {topic} (set every question's topic to exactly this)")
+    else:
+        topic_list = ", ".join(known_topics) or "(none yet)"
+        lines.append(
+            "Set each question's topic. Use one of these existing topic names "
+            f"when it fits: {topic_list}. If the document covers an Operating "
+            "Systems area that none of them fits, name a new topic in 1-4 words "
+            'in Title Case, e.g. "Disk Scheduling".'
+        )
+    lines += [f"Difficulty: {difficulty}", f"Number of questions: {count}"]
+    if guidance:
+        lines.append(f"Extra instructions from the admin: {guidance}")
+    if parts > 1:
+        if document is not None:
+            # Each part takes its own share of the document, so they don't overlap
+            lines.append(
+                f"This is part {part} of {parts}, written at the same time as the "
+                f"others. Take your questions mainly from section {part} of {parts} "
+                "of the document (split it into equal sections from start to end)."
+            )
+        else:
+            lines.append(
+                f"This is part {part} of {parts}; the other parts are written at "
+                "the same time without seeing yours, so pick less obvious areas "
+                "of the topic to avoid overlapping them."
+            )
+
+    # Sending existing questions stops Gemini from repeating them. Capped so
+    # a big topic doesn't make the prompt huge.
+    avoid = "\n".join(f"- {text}" for text in existing_questions[:150]) or "(none yet)"
+    lines.append(
+        "\nThese questions already exist - don't repeat them or ask the same "
+        f"thing:\n{avoid}"
+    )
+    return "\n".join(lines)
+
+
+def _write_part(
+    client: genai.Client,
+    topic: str | None,
+    difficulty: str,
+    count: int,
+    existing_questions: list[str],
+    guidance: str,
+    document: Document | None,
+    known_topics: list[str],
     part: int,
     parts: int,
 ) -> tuple[list[dict], list[str]] | GenerationError:
     """Write and check one part. Returns the error instead of raising it, so
     one failed part doesn't throw away the others."""
     thinking = THINKING_LEVEL[difficulty]
-
-    # Sending existing questions stops Gemini from repeating them. Capped so
-    # a big topic doesn't make the prompt huge.
-    avoid = "\n".join(f"- {text}" for text in existing_questions[:150]) or "(none yet)"
-    prompt = (
-        f"Topic: {topic}\n"
-        f"Difficulty: {difficulty}\n"
-        f"Number of questions: {count}\n"
-        + (f"Extra instructions from the admin: {guidance}\n" if guidance else "")
-        + (
-            f"This is part {part} of {parts}; the other parts are written at "
-            "the same time without seeing yours, so pick less obvious areas "
-            "of the topic to avoid overlapping them.\n"
-            if parts > 1 else ""
-        )
-        + f"\nThese questions already exist - don't repeat them or ask the same thing:\n{avoid}"
+    prompt = _writer_prompt(
+        topic, difficulty, count, existing_questions, guidance,
+        document, known_topics, part, parts,
     )
 
     try:
-        batch = _ask(client, WRITER_INSTRUCTIONS, prompt, GeneratedBatch, thinking)
+        batch = _ask(
+            client, WRITER_INSTRUCTIONS, _with_document(document, prompt),
+            GeneratedBatch, thinking,
+        )
     except GenerationError as error:
         return error
 
@@ -237,33 +341,40 @@ def _write_part(
     seen = {text.strip().lower() for text in existing_questions}
     for question in batch.questions[:count]:
         problems = problems_with(question)
+        question_topic = topic or _tidy_topic(question.topic, known_topics)
+        if len(question_topic) < 2:
+            problems.append("has no topic")
         if question.question.strip().lower() in seen:
             problems.append("duplicates an existing question")
         if problems:
             skipped.append(f"{question.question.strip()[:80]}: {', '.join(problems)}")
             continue
         seen.add(question.question.strip().lower())
-        valid.append(question)
+        valid.append((question, question_topic))
 
     # Second opinion: a separate call answers the questions WITHOUT seeing
-    # the answer key. Disagreements are flagged for the admin, not dropped -
-    # sometimes the writer is right and the checker is wrong.
+    # the answer key (but with the document, if there is one). Disagreements
+    # are flagged for the admin, not dropped - sometimes the writer is right
+    # and the checker is wrong.
     checked: dict[int, int] = {}
     if valid:
         quiz = "\n\n".join(
             f"{number}. {question.question}\n"
             + "\n".join(f"   {i}: {option}" for i, option in enumerate(question.options))
-            for number, question in enumerate(valid, start=1)
+            for number, (question, _) in enumerate(valid, start=1)
         )
         try:
-            result = _ask(client, CHECKER_INSTRUCTIONS, quiz, CheckedBatch, thinking)
+            result = _ask(
+                client, CHECKER_INSTRUCTIONS, _with_document(document, quiz),
+                CheckedBatch, thinking,
+            )
             checked = {answer.number: answer.answer_index for answer in result.answers}
         except GenerationError:
             # The questions are still worth reviewing without a second opinion
             checked = {}
 
     questions = []
-    for number, question in enumerate(valid, start=1):
+    for number, (question, question_topic) in enumerate(valid, start=1):
         options = [option.strip() for option in question.options]
         checker_pick = checked.get(number)
 
@@ -282,7 +393,7 @@ def _write_part(
             "options": options,
             "correct_index": question.correct_index,
             "explanation": question.explanation.strip() or None,
-            "topic": topic,
+            "topic": question_topic,
             "difficulty": difficulty,
             "status": "pending",
             "source": "ai",

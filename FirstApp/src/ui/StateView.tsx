@@ -1,15 +1,13 @@
-import Ionicons from "@expo/vector-icons/Ionicons";
-import type { ComponentProps, ReactNode } from "react";
-import { ActivityIndicator, StyleSheet, View } from "react-native";
+import type { ReactNode } from "react";
+import { ActivityIndicator, View } from "react-native";
 
 import { AppText } from "@/ui/AppText";
-import { colors, radius, spacing } from "@/ui/theme";
-
-type IconName = ComponentProps<typeof Ionicons>["name"];
+import { Reveal } from "@/ui/Reveal";
+import { spacing } from "@/ui/theme";
+import { createStyles, useTheme } from "@/ui/ThemeProvider";
 
 type Props = {
   loading?: boolean; // just a spinner (and the message, if given)
-  icon?: IconName;
   tone?: "default" | "danger";
   title?: string;
   message?: string | null;
@@ -21,27 +19,16 @@ type Props = {
 // all look the same.
 export function StateView({
   loading,
-  icon,
   tone = "default",
   title,
   message,
   children,
 }: Props) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   return (
-    <View style={styles.state}>
-      {loading ? (
-        <ActivityIndicator size="large" color={colors.accent} />
-      ) : (
-        icon && (
-          <View style={[styles.iconCircle, tone === "danger" && styles.dangerCircle]}>
-            <Ionicons
-              name={icon}
-              size={30}
-              color={tone === "danger" ? colors.danger : colors.accentText}
-            />
-          </View>
-        )
-      )}
+    <Reveal style={styles.state}>
+      {loading && <ActivityIndicator size="large" color={colors.accent} />}
       {title && (
         <AppText variant="heading" center>
           {title}
@@ -53,11 +40,11 @@ export function StateView({
         </AppText>
       )}
       {children && <View style={styles.actions}>{children}</View>}
-    </View>
+    </Reveal>
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createStyles((colors) => ({
   state: {
     flex: 1,
     alignItems: "center",
@@ -65,18 +52,6 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.xxl,
-  },
-  iconCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: radius.pill,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.accentSoft,
-    marginBottom: spacing.xs,
-  },
-  dangerCircle: {
-    backgroundColor: colors.dangerSoft,
   },
   message: {
     maxWidth: 320,
@@ -86,4 +61,4 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     marginTop: spacing.sm,
   },
-});
+}));

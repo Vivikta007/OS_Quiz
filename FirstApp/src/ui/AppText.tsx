@@ -1,18 +1,27 @@
 import { StyleSheet, Text, type TextProps, type TextStyle } from "react-native";
 
-import { colors, typography } from "@/ui/theme";
+import { type Palette, typography } from "@/ui/theme";
+import { useTheme } from "@/ui/ThemeProvider";
 
 type Variant = keyof typeof typography;
 type Tone = "default" | "secondary" | "muted" | "accent" | "success" | "danger";
 
-const toneColors: Record<Tone, string> = {
-  default: colors.text,
-  secondary: colors.textSecondary,
-  muted: colors.textMuted,
-  accent: colors.accentText,
-  success: colors.success,
-  danger: colors.danger,
-};
+function toneColor(colors: Palette, tone: Tone) {
+  switch (tone) {
+    case "secondary":
+      return colors.textSecondary;
+    case "muted":
+      return colors.textMuted;
+    case "accent":
+      return colors.accentText;
+    case "success":
+      return colors.success;
+    case "danger":
+      return colors.danger;
+    default:
+      return colors.text;
+  }
+}
 
 type Props = TextProps & {
   variant?: Variant;
@@ -28,11 +37,13 @@ export function AppText({
   style,
   ...rest
 }: Props) {
+  const { colors } = useTheme();
+
   return (
     <Text
       style={[
         typography[variant] as TextStyle,
-        { color: toneColors[tone] },
+        { color: toneColor(colors, tone) },
         center && styles.center,
         style,
       ]}

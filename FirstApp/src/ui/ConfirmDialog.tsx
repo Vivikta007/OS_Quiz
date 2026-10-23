@@ -1,16 +1,12 @@
-import Ionicons from "@expo/vector-icons/Ionicons";
-import type { ComponentProps } from "react";
 import { Modal, Pressable, StyleSheet, View } from "react-native";
 
 import { AppText } from "@/ui/AppText";
 import { Button } from "@/ui/Button";
-import { colors, radius, spacing } from "@/ui/theme";
-
-type IconName = ComponentProps<typeof Ionicons>["name"];
+import { radius, spacing } from "@/ui/theme";
+import { createStyles } from "@/ui/ThemeProvider";
 
 type Props = {
   visible: boolean;
-  icon?: IconName;
   title: string;
   message: string;
   confirmLabel: string;
@@ -23,7 +19,6 @@ type Props = {
 // A centred confirmation pop-up that matches the app (system alerts don't).
 export function ConfirmDialog({
   visible,
-  icon,
   title,
   message,
   confirmLabel,
@@ -32,6 +27,7 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
 }: Props) {
+  const styles = useStyles();
   return (
     <Modal
       visible={visible}
@@ -45,21 +41,6 @@ export function ConfirmDialog({
         <Pressable style={StyleSheet.absoluteFill} onPress={onCancel} />
 
         <View style={styles.card}>
-          {icon && (
-            <View
-              style={[
-                styles.iconCircle,
-                destructive && { backgroundColor: colors.dangerSoft },
-              ]}
-            >
-              <Ionicons
-                name={icon}
-                size={26}
-                color={destructive ? colors.danger : colors.accentText}
-              />
-            </View>
-          )}
-
           <AppText variant="heading" center>
             {title}
           </AppText>
@@ -87,7 +68,7 @@ export function ConfirmDialog({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createStyles((colors) => ({
   overlay: {
     flex: 1,
     backgroundColor: colors.overlay,
@@ -96,20 +77,9 @@ const styles = StyleSheet.create({
   },
   card: {
     backgroundColor: colors.surface,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
+    borderRadius: radius.lg + 4,
     padding: spacing.xl,
     alignItems: "center",
-  },
-  iconCircle: {
-    width: 52,
-    height: 52,
-    borderRadius: radius.pill,
-    backgroundColor: colors.accentSoft,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: spacing.md,
   },
   message: {
     marginTop: spacing.sm,
@@ -123,4 +93,4 @@ const styles = StyleSheet.create({
   button: {
     flex: 1,
   },
-});
+}));

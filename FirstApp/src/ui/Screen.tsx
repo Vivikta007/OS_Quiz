@@ -1,25 +1,27 @@
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 import {
   KeyboardAvoidingView,
   Platform,
   RefreshControl,
   ScrollView,
-  StyleSheet,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { colors, layout, spacing } from "@/ui/theme";
+import { layout, spacing } from "@/ui/theme";
+import { createStyles, useTheme } from "@/ui/ThemeProvider";
 
 type Props = {
   children: ReactNode;
   header?: ReactNode; // stays at the top (e.g. <Header />)
   footer?: ReactNode; // stays at the bottom (e.g. the main button)
+  tabBar?: ReactNode; // <TabBar />, below the footer, edge to edge
   scroll?: boolean; // let the content scroll
   keyboard?: boolean; // move content up when the keyboard opens
   // Pull down to reload (needs scroll). `refreshing` shows the spinner.
   onRefresh?: () => void;
   refreshing?: boolean;
+  scrollRef?: Ref<ScrollView>; // e.g. to scroll back to the top
 };
 
 // Every screen's outer layout. SafeAreaView keeps content clear of the
@@ -29,13 +31,18 @@ export function Screen({
   children,
   header,
   footer,
+  tabBar,
   scroll = false,
   keyboard = false,
   onRefresh,
   refreshing = false,
+  scrollRef,
 }: Props) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const body = scroll ? (
     <ScrollView
+      ref={scrollRef}
       style={styles.flex}
       contentContainerStyle={styles.scrollContent}
       showsVerticalScrollIndicator={false}
@@ -63,11 +70,16 @@ export function Screen({
       {header}
       {body}
       {footer && <View style={styles.footer}>{footer}</View>}
+      {tabBar}
     </>
   );
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+    // The tab bar pads itself below the home indicator
+    <SafeAreaView
+      style={styles.safeArea}
+      edges={tabBar ? ["top"] : ["top", "bottom"]}
+    >
       {keyboard ? (
         <KeyboardAvoidingView
           style={styles.flex}
@@ -82,7 +94,7 @@ export function Screen({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createStyles((colors) => ({
   safeArea: {
     flex: 1,
     backgroundColor: colors.background,
@@ -103,10 +115,8 @@ const styles = StyleSheet.create({
   footer: {
     paddingHorizontal: layout.screenPadding,
     paddingTop: spacing.md,
-    paddingBottom: spacing.md,
+    paddingBottom: spacing.sm,
     gap: spacing.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
     backgroundColor: colors.background,
   },
-});
+}));

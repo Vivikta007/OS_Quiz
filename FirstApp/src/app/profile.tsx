@@ -1,7 +1,7 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { type Href, router } from "expo-router";
-import { type ComponentProps, useEffect, useState } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { useEffect, useState } from "react";
+import { Pressable, View } from "react-native";
 
 import { showAlert } from "@/lib/alert";
 import { apiRequest } from "@/lib/api";
@@ -11,13 +11,14 @@ import { Button } from "@/ui/Button";
 import { Card } from "@/ui/Card";
 import { ConfirmDialog } from "@/ui/ConfirmDialog";
 import { successHaptic, tapHaptic } from "@/ui/haptics";
+import { Bullet, initials } from "@/ui/Brand";
 import { Header } from "@/ui/Header";
 import { Screen } from "@/ui/Screen";
+import { TabBar } from "@/ui/TabBar";
 import { StateView } from "@/ui/StateView";
 import { TextField } from "@/ui/TextField";
-import { colors, radius, spacing } from "@/ui/theme";
-
-type IconName = ComponentProps<typeof Ionicons>["name"];
+import { radius, spacing } from "@/ui/theme";
+import { createStyles, useTheme } from "@/ui/ThemeProvider";
 
 // Shows the logged-in user's profile (GET /me) and lets them change
 // their name (PATCH /profile). Email can't be changed here - Supabase Auth
@@ -32,6 +33,8 @@ type Profile = {
 };
 
 export default function ProfileScreen() {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(true);
@@ -95,7 +98,7 @@ export default function ProfileScreen() {
 
   if (loading) {
     return (
-      <Screen header={<Header title="Profile" />}>
+      <Screen header={<Header title="Profile" hideBack />} tabBar={<TabBar active="profile" />}>
         <StateView loading />
       </Screen>
     );
@@ -103,9 +106,8 @@ export default function ProfileScreen() {
 
   if (loadError || !profile) {
     return (
-      <Screen header={<Header title="Profile" />}>
+      <Screen header={<Header title="Profile" hideBack />} tabBar={<TabBar active="profile" />}>
         <StateView
-          icon="cloud-offline-outline"
           tone="danger"
           title="Couldn't load your profile"
           message={loadError}
@@ -116,7 +118,7 @@ export default function ProfileScreen() {
     );
   }
 
-  const initial = (profile.full_name || profile.email).charAt(0).toUpperCase();
+  const initial = initials(profile.full_name || profile.email);
   const memberSince = profile.profile_created_at
     ? new Date(profile.profile_created_at).toLocaleDateString(undefined, {
         year: "numeric",
@@ -129,7 +131,8 @@ export default function ProfileScreen() {
     <Screen
       scroll
       keyboard
-      header={<Header title="Profile" />}
+      header={<Header title="Profile" hideBack />}
+      tabBar={<TabBar active="profile" />}
       footer={
         nameChanged && (
           <Button
@@ -143,7 +146,9 @@ export default function ProfileScreen() {
     >
       <View style={styles.identity}>
         <View style={styles.avatar}>
-          <AppText variant="display">{initial}</AppText>
+          <AppText variant="title" tone="accent">
+            {initial}
+          </AppText>
         </View>
         <AppText variant="heading" center>
           {profile.full_name || "No name yet"}
@@ -187,18 +192,16 @@ export default function ProfileScreen() {
       <View style={styles.menu}>
         {profile.is_admin && (
           <MenuRow
-            icon="shield-checkmark-outline"
-            label="Question review"
+            label="Teaching workspace"
             hint="Admin"
             href="/admin"
           />
         )}
-        <MenuRow icon="phone-portrait-outline" label="Device info" href="/device" />
+        <MenuRow label="Device info" href="/device" />
       </View>
 
       <Button
         title="Log out"
-        icon="log-out-outline"
         variant="danger"
         onPress={() => setConfirmLogout(true)}
         style={styles.logout}
@@ -206,7 +209,6 @@ export default function ProfileScreen() {
 
       <ConfirmDialog
         visible={confirmLogout}
-        icon="log-out-outline"
         title="Log out?"
         message="You'll need your email and password to log back in."
         confirmLabel="Log out"
@@ -224,16 +226,16 @@ export default function ProfileScreen() {
 
 // One tappable row in the settings-style menu
 function MenuRow({
-  icon,
   label,
   hint,
   href,
 }: {
-  icon: IconName;
   label: string;
   hint?: string;
   href: Href;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   return (
     <Pressable
       accessibilityRole="button"
@@ -243,9 +245,7 @@ function MenuRow({
       }}
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
     >
-      <View style={styles.rowIcon}>
-        <Ionicons name={icon} size={20} color={colors.accentText} />
-      </View>
+      <Bullet />
       <AppText variant="bodyStrong" style={styles.rowLabel}>
         {label}
       </AppText>
@@ -259,7 +259,7 @@ function MenuRow({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createStyles((colors) => ({
   identity: {
     alignItems: "center",
     gap: spacing.xs,
@@ -267,14 +267,12 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xl,
   },
   avatar: {
-    width: 88,
-    height: 88,
+    width: 80,
+    height: 80,
     borderRadius: radius.pill,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.accentSoft,
-    borderWidth: 2,
-    borderColor: colors.accent,
     marginBottom: spacing.md,
   },
   card: {
@@ -300,19 +298,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     minHeight: 56,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
   rowPressed: {
     backgroundColor: colors.surfaceRaised,
-  },
-  rowIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: radius.sm,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.accentSoft,
   },
   rowLabel: {
     flex: 1,
@@ -320,4 +310,4 @@ const styles = StyleSheet.create({
   logout: {
     marginTop: spacing.xl,
   },
-});
+}));

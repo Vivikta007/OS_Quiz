@@ -1,19 +1,15 @@
-import Ionicons from "@expo/vector-icons/Ionicons";
-import type { ComponentProps } from "react";
 import {
   ActivityIndicator,
   Pressable,
   StyleSheet,
   type StyleProp,
   Text,
-  View,
   type ViewStyle,
 } from "react-native";
 
 import { tapHaptic } from "@/ui/haptics";
-import { colors, layout, radius, spacing } from "@/ui/theme";
+import { colors, fonts, layout, radius, spacing } from "@/ui/theme";
 
-type IconName = ComponentProps<typeof Ionicons>["name"];
 type Variant = "primary" | "secondary" | "ghost" | "danger";
 
 type Props = {
@@ -21,22 +17,24 @@ type Props = {
   onPress: () => void;
   variant?: Variant;
   size?: "md" | "sm";
-  icon?: IconName; // shown before the title
-  trailingIcon?: IconName; // shown after the title
   loading?: boolean;
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
 };
 
-const variantStyles: Record<
-  Variant,
-  { background: string; pressed: string; border: string; text: string }
-> = {
+type Look = {
+  background: string;
+  pressed: string;
+  border: string;
+  text: string;
+};
+
+const looks: Record<Variant, Look> = {
   primary: {
     background: colors.accent,
     pressed: colors.accentPressed,
     border: colors.accent,
-    text: "#FFFFFF",
+    text: colors.onAccent,
   },
   secondary: {
     background: colors.surface,
@@ -46,34 +44,32 @@ const variantStyles: Record<
   },
   ghost: {
     background: "transparent",
-    pressed: colors.surface,
+    pressed: colors.surfaceRaised,
     border: "transparent",
-    text: colors.textSecondary,
+    text: colors.accentText,
   },
   danger: {
     background: colors.dangerSoft,
-    pressed: "rgba(248, 113, 113, 0.2)",
-    border: "rgba(248, 113, 113, 0.35)",
+    pressed: colors.dangerPressed,
+    border: colors.dangerSoft,
     text: colors.danger,
   },
 };
 
-// One button for the whole app. Pressing it shrinks it slightly, darkens it
-// and gives a light vibration, so every tap feels the same.
+// One plain text button for the whole app, with a light vibration on
+// every tap.
 export function Button({
   title,
   onPress,
   variant = "primary",
   size = "md",
-  icon,
-  trailingIcon,
   loading = false,
   disabled = false,
   style,
 }: Props) {
-  const look = variantStyles[variant];
+  const look = looks[variant];
   const inactive = disabled || loading;
-  const iconSize = size === "sm" ? 17 : 19;
+  const small = size === "sm";
 
   return (
     <Pressable
@@ -87,11 +83,11 @@ export function Button({
       style={({ pressed }) => [
         styles.base,
         {
-          height: size === "sm" ? layout.buttonHeightSmall : layout.buttonHeight,
+          height: small ? layout.buttonHeightSmall : layout.buttonHeight,
+          paddingHorizontal: small ? spacing.md : spacing.lg + 2,
           backgroundColor: pressed ? look.pressed : look.background,
           borderColor: look.border,
           opacity: disabled ? 0.45 : 1,
-          transform: [{ scale: pressed ? 0.98 : 1 }],
         },
         style,
       ]}
@@ -99,21 +95,12 @@ export function Button({
       {loading ? (
         <ActivityIndicator color={look.text} />
       ) : (
-        <View style={styles.content}>
-          {icon && <Ionicons name={icon} size={iconSize} color={look.text} />}
-          <Text
-            style={[
-              styles.title,
-              { color: look.text, fontSize: size === "sm" ? 14 : 16 },
-            ]}
-            numberOfLines={1}
-          >
-            {title}
-          </Text>
-          {trailingIcon && (
-            <Ionicons name={trailingIcon} size={iconSize} color={look.text} />
-          )}
-        </View>
+        <Text
+          style={[styles.title, { color: look.text, fontSize: small ? 13.5 : 15 }]}
+          numberOfLines={1}
+        >
+          {title}
+        </Text>
       )}
     </Pressable>
   );
@@ -123,16 +110,10 @@ const styles = StyleSheet.create({
   base: {
     borderRadius: radius.md,
     borderWidth: 1,
-    paddingHorizontal: spacing.lg,
     alignItems: "center",
     justifyContent: "center",
   },
-  content: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-  },
   title: {
-    fontWeight: "600",
+    fontFamily: fonts.bodySemiBold,
   },
 });

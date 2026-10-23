@@ -2,14 +2,14 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useState } from "react";
 import {
   Pressable,
-  StyleSheet,
   TextInput,
   type TextInputProps,
   View,
 } from "react-native";
 
 import { AppText } from "@/ui/AppText";
-import { colors, layout, radius, spacing, typography } from "@/ui/theme";
+import { layout, radius, spacing, typography } from "@/ui/theme";
+import { createStyles, useTheme } from "@/ui/ThemeProvider";
 
 type Props = TextInputProps & {
   label: string;
@@ -20,12 +20,14 @@ type Props = TextInputProps & {
 // A labelled text input. The border lights up while typing, and password
 // fields get a show/hide button.
 export function TextField({ label, password, style, multiline, ...rest }: Props) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const [focused, setFocused] = useState(false);
   const [hidden, setHidden] = useState(true);
 
   return (
     <View style={styles.field}>
-      <AppText variant="label" tone="secondary">
+      <AppText variant="caption" tone="secondary">
         {label}
       </AppText>
       <View
@@ -71,15 +73,15 @@ export function TextField({ label, password, style, multiline, ...rest }: Props)
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createStyles((colors) => ({
   field: {
-    gap: spacing.sm,
+    gap: 6,
   },
   box: {
     flexDirection: "row",
     alignItems: "center",
     minHeight: layout.buttonHeight,
-    backgroundColor: colors.surfaceRaised,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radius.md,
@@ -109,4 +111,4 @@ const styles = StyleSheet.create({
     alignSelf: "stretch",
     justifyContent: "center",
   },
-});
+}));

@@ -18,10 +18,12 @@ import { goBack, goHome } from "@/lib/navigation";
 import { AppText } from "@/ui/AppText";
 import { Button } from "@/ui/Button";
 import { ConfirmDialog } from "@/ui/ConfirmDialog";
+import { Brand } from "@/ui/Brand";
 import { IconButton } from "@/ui/Header";
 import { selectHaptic, successHaptic, warningHaptic } from "@/ui/haptics";
 import { Screen } from "@/ui/Screen";
-import { colors, layout, radius, spacing } from "@/ui/theme";
+import { fonts, layout, radius, spacing } from "@/ui/theme";
+import { createStyles, useTheme } from "@/ui/ThemeProvider";
 
 // A random ID for this quiz attempt. If saving is retried after a network
 // error, the server sees the same ID and won't save the quiz twice.
@@ -66,6 +68,8 @@ type QuestionState = {
 // QUIZ SCREEN
 
 export default function QuizScreen() {
+  const styles = useStyles();
+  const { colors } = useTheme();
   // GET QUIZ SETTINGS FROM quizInit.tsx
 
   const { topics, difficulty, questionCount } = useLocalSearchParams<{
@@ -346,9 +350,6 @@ export default function QuizScreen() {
   if (loadError) {
     return (
       <SafeAreaView style={styles.centered}>
-        <View style={styles.stateIcon}>
-          <Ionicons name="alert-circle-outline" size={30} color={colors.danger} />
-        </View>
         <AppText variant="heading" center style={styles.stateTitle}>
           Couldn&apos;t start the quiz
         </AppText>
@@ -384,7 +385,7 @@ export default function QuizScreen() {
   const selectedAnswer = questionStates[currentQuestion]?.selectedAnswer ?? null;
   const isFirst = currentQuestion === 0;
   const isLast = currentQuestion === quizQuestions.length - 1;
-  const progress = (currentQuestion + 1) / quizQuestions.length;
+  const pad = (n: number) => String(n).padStart(2, "0");
   const answeredCount = questionStates.filter(
     (state) => state.selectedAnswer !== null,
   ).length;
@@ -394,51 +395,90 @@ export default function QuizScreen() {
     <Screen
       scroll
       header={
-        <View>
+        <View style={styles.head}>
           <View style={styles.topBar}>
-            <IconButton icon="close" label="End quiz" onPress={openExitDialog} />
-
-            <AppText variant="bodyStrong">
-              Question {currentQuestion + 1}
-              <AppText variant="body" tone="muted">
-                {" "}
-                of {quizQuestions.length}
-              </AppText>
-            </AppText>
-
-            <IconButton
-              icon="grid-outline"
-              label="All questions"
-              onPress={() => setShowPalette(true)}
-            />
+            <Brand />
+            <View style={styles.topActions}>
+              <IconButton
+                icon="grid-outline"
+                label="All questions"
+                onPress={() => setShowPalette(true)}
+              />
+              <IconButton icon="close" label="End quiz" onPress={openExitDialog} />
+            </View>
           </View>
 
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${progress * 100}%` }]} />
+          <View style={styles.topicRow}>
+            <AppText variant="heading" numberOfLines={1} style={styles.topic}>
+              {question.topic}
+            </AppText>
+            <ElapsedTimer />
+          </View>
+
+          <View
+            style={styles.counterRow}
+            accessible
+            accessibilityLabel={`Question ${currentQuestion + 1} of ${quizQuestions.length}`}
+          >
+            <AppText variant="caption" tone="secondary">
+              Question {pad(currentQuestion + 1)} of {pad(quizQuestions.length)}
+            </AppText>
+          </View>
+
+          {/* One segment per question: answered and current in teal */}
+          <View style={styles.steps}>
+            {quizQuestions.map((_, index) => (
+              <View
+                key={index}
+                style={[
+                  styles.step,
+                  questionStates[index]?.selectedAnswer != null && styles.stepAnswered,
+                  index === currentQuestion && styles.stepCurrent,
+                ]}
+              />
+            ))}
           </View>
         </View>
       }
       footer={
-        <View style={styles.footerRow}>
-          <Button
-            title="Previous"
-            variant="secondary"
-            disabled={isFirst}
-            onPress={() => goToQuestion(currentQuestion - 1)}
-            style={styles.footerButton}
-          />
-          <Button
-            title={isLast ? "Submit" : "Next"}
-            onPress={() =>
-              isLast
-                ? setShowSubmitInterrupt(true)
-                : goToQuestion(currentQuestion + 1)
-            }
-            style={styles.footerButton}
-          />
-        </View>
+        <>
+          {selectedAnswer !== null && (
+            <View style={styles.selectedNote}>
+              <Ionicons
+                name="checkmark-circle-outline"
+                size={15}
+                color={colors.accentText}
+              />
+              <AppText variant="caption" tone="secondary">
+                Answer selected. You can still change it.
+              </AppText>
+            </View>
+          )}
+          <View style={styles.footerRow}>
+            {!isFirst && (
+              <Button
+                title="Back"
+                variant="secondary"
+                onPress={() => goToQuestion(currentQuestion - 1)}
+              />
+            )}
+            <Button
+              title={isLast ? "Submit quiz" : "Next question"}
+              onPress={() =>
+                isLast
+                  ? setShowSubmitInterrupt(true)
+                  : goToQuestion(currentQuestion + 1)
+              }
+              style={styles.footerButton}
+            />
+          </View>
+        </>
       }
     >
+      <AppText variant="label" tone="accent" style={styles.kind}>
+        Single choice · {question.difficulty}
+      </AppText>
+
       {/* QUESTION */}
       <AppText variant="title" style={styles.question}>
         {question.question}
@@ -460,7 +500,7 @@ export default function QuizScreen() {
               style={({ pressed }) => [
                 styles.option,
                 isSelected && styles.optionSelected,
-                pressed && !isSelected && styles.optionPressed,
+                pressed && styles.optionPressed,
               ]}
             >
               <View
@@ -474,7 +514,10 @@ export default function QuizScreen() {
                 </AppText>
               </View>
 
-              <AppText variant="body" style={styles.optionText}>
+              <AppText
+                variant="body"
+                style={[styles.optionText, isSelected && styles.optionTextSelected]}
+              >
                 {option}
               </AppText>
 
@@ -562,7 +605,6 @@ export default function QuizScreen() {
       {/* SUBMIT CONFIRMATION */}
       <ConfirmDialog
         visible={showSubmitInterrupt}
-        icon="checkmark-done-outline"
         title="Submit quiz?"
         message={
           unansweredCount > 0
@@ -578,7 +620,6 @@ export default function QuizScreen() {
       {/* EXIT CONFIRMATION */}
       <ConfirmDialog
         visible={showExitInterrupt}
-        icon="exit-outline"
         title="End this quiz?"
         message="Your answers won't be saved."
         confirmLabel="End quiz"
@@ -594,6 +635,33 @@ export default function QuizScreen() {
   );
 }
 
+// Time since the quiz opened, mm:ss. Lives in its own component so the
+// tick only re-renders this pill, not the whole quiz.
+function ElapsedTimer() {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const [started] = useState(() => Date.now());
+  const [now, setNow] = useState(started);
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const seconds = Math.floor((now - started) / 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const text = `${pad(Math.floor(seconds / 60))}:${pad(seconds % 60)}`;
+
+  return (
+    <View style={styles.timer} accessibilityLabel={`Time elapsed ${text}`}>
+      <Ionicons name="time-outline" size={14} color={colors.accentText} />
+      <AppText variant="caption" tone="accent" style={styles.timerText}>
+        {text}
+      </AppText>
+    </View>
+  );
+}
+
 function LegendItem({
   color,
   label,
@@ -603,6 +671,7 @@ function LegendItem({
   label: string;
   outline?: boolean;
 }) {
+  const styles = useStyles();
   return (
     <View style={styles.legendItem}>
       <View
@@ -620,7 +689,7 @@ function LegendItem({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createStyles((colors) => ({
   // LOADING / ERROR STATES
 
   centered: {
@@ -630,14 +699,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: layout.screenPadding,
     gap: spacing.sm,
-  },
-  stateIcon: {
-    width: 60,
-    height: 60,
-    borderRadius: radius.pill,
-    backgroundColor: colors.dangerSoft,
-    alignItems: "center",
-    justifyContent: "center",
   },
   stateTitle: {
     marginTop: spacing.md,
@@ -649,47 +710,94 @@ const styles = StyleSheet.create({
 
   // TOP BAR
 
+  head: {
+    paddingHorizontal: layout.screenPadding,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xs,
+    gap: spacing.md,
+  },
   topBar: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: spacing.lg,
-    height: 56,
   },
-  progressTrack: {
-    height: 4,
+  topActions: {
+    flexDirection: "row",
+    gap: spacing.sm,
+  },
+  topicRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.md,
+    marginTop: spacing.xs,
+  },
+  topic: {
+    flex: 1,
+  },
+  timer: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    height: 28,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
     backgroundColor: colors.surface,
   },
-  progressFill: {
-    height: "100%",
+  timerText: {
+    fontVariant: ["tabular-nums"],
+  },
+  counterRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  steps: {
+    flexDirection: "row",
+    gap: 4,
+  },
+  step: {
+    flex: 1,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.border,
+  },
+  stepAnswered: {
     backgroundColor: colors.accent,
-    borderTopRightRadius: 2,
-    borderBottomRightRadius: 2,
+  },
+  stepCurrent: {
+    backgroundColor: colors.accentPressed,
   },
 
   // QUESTION
 
+  kind: {
+    marginTop: spacing.lg,
+  },
   question: {
-    fontSize: 22,
+    fontSize: 23,
     lineHeight: 30,
-    marginTop: spacing.xl,
+    letterSpacing: -0.3,
+    marginTop: spacing.sm,
     marginBottom: spacing.xl,
   },
 
   // OPTIONS
 
   options: {
-    gap: spacing.md,
+    gap: 10,
   },
   option: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
-    minHeight: 60,
-    paddingHorizontal: spacing.lg,
+    minHeight: 58,
+    paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
-    borderRadius: radius.md,
-    borderWidth: 1,
+    borderRadius: radius.md + 2,
+    borderWidth: 1.5,
     borderColor: colors.border,
     backgroundColor: colors.surface,
   },
@@ -703,7 +811,7 @@ const styles = StyleSheet.create({
   optionLetter: {
     width: 30,
     height: 30,
-    borderRadius: 8,
+    borderRadius: radius.sm + 1,
     backgroundColor: colors.surfaceRaised,
     alignItems: "center",
     justifyContent: "center",
@@ -713,20 +821,32 @@ const styles = StyleSheet.create({
   },
   optionLetterText: {
     color: colors.textSecondary,
-    fontWeight: "700",
+    fontFamily: fonts.bodySemiBold,
   },
   white: {
-    color: "#FFFFFF",
+    color: colors.onAccent,
   },
   optionText: {
     flex: 1,
   },
+  optionTextSelected: {
+    fontFamily: fonts.bodyMedium,
+    color: colors.accentPressed,
+  },
 
+  // FOOTER
+
+  selectedNote: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
   // FOOTER
 
   footerRow: {
     flexDirection: "row",
-    gap: spacing.md,
+    gap: spacing.sm,
   },
   footerButton: {
     flex: 1,
@@ -780,11 +900,11 @@ const styles = StyleSheet.create({
   },
   cellAnswered: {
     backgroundColor: colors.successSoft,
-    borderColor: "rgba(34, 197, 94, 0.45)",
+    borderColor: colors.success,
   },
   cellSkipped: {
     backgroundColor: colors.warningSoft,
-    borderColor: "rgba(245, 158, 11, 0.45)",
+    borderColor: colors.warning,
   },
   cellCurrent: {
     borderColor: colors.accent,
@@ -805,4 +925,4 @@ const styles = StyleSheet.create({
     height: 12,
     borderRadius: 4,
   },
-});
+}));

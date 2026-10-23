@@ -9,3 +9,5 @@ pydantic==2.14.1
 email-validator==2.3.0
 python-dotenv==1.2.4
 google-genai==2.32.0
+python-multipart==0.0.32  # file uploads (admin: questions from a document)
+python-docx==1.2.0        # reading .docx uploads

@@ -1,8 +1,9 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 
 import { selectHaptic } from "@/ui/haptics";
-import { colors, radius, spacing } from "@/ui/theme";
+import { fonts, radius, spacing } from "@/ui/theme";
+import { createStyles, useTheme } from "@/ui/ThemeProvider";
 
 // A pill you can switch on/off, e.g. a quiz topic.
 export function Chip({
@@ -14,6 +15,8 @@ export function Chip({
   selected: boolean;
   onPress: () => void;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   return (
     <Pressable
       accessibilityRole="checkbox"
@@ -28,9 +31,7 @@ export function Chip({
         pressed && styles.pressed,
       ]}
     >
-      {selected && (
-        <Ionicons name="checkmark" size={16} color={colors.accentText} />
-      )}
+      {selected && <Ionicons name="checkmark" size={14} color={colors.onInk} />}
       <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
         {label}
       </Text>
@@ -50,6 +51,7 @@ export function SegmentedControl<T extends string | number>({
   onChange: (value: T) => void;
   format?: (value: T) => string;
 }) {
+  const styles = useStyles();
   return (
     <View style={styles.segmented} accessibilityRole="radiogroup">
       {options.map((option) => {
@@ -79,60 +81,61 @@ export function SegmentedControl<T extends string | number>({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createStyles((colors) => ({
+  // Pills: white with a hairline border, solid ink when selected
   chip: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.xs,
     paddingHorizontal: 14,
-    height: 38,
+    height: 34,
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
   },
   chipSelected: {
-    borderColor: colors.accent,
-    backgroundColor: colors.accentSoft,
+    borderColor: colors.ink,
+    backgroundColor: colors.ink,
   },
   pressed: {
     opacity: 0.8,
   },
   chipText: {
     color: colors.textSecondary,
-    fontSize: 14,
-    fontWeight: "500",
+    fontSize: 13,
+    fontFamily: fonts.bodyMedium,
   },
   chipTextSelected: {
-    color: colors.text,
-    fontWeight: "600",
+    color: colors.onInk,
+    fontFamily: fonts.bodySemiBold,
   },
   segmented: {
     flexDirection: "row",
-    padding: 4,
-    gap: 4,
+    padding: 3,
+    gap: 3,
     borderRadius: radius.md,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
+    backgroundColor: colors.surfaceRaised,
   },
   segment: {
     flex: 1,
-    height: 38,
-    borderRadius: radius.sm,
+    height: 36,
+    borderRadius: radius.sm + 1,
     alignItems: "center",
     justifyContent: "center",
   },
   segmentSelected: {
-    backgroundColor: colors.accent,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   segmentText: {
     color: colors.textSecondary,
-    fontSize: 14,
-    fontWeight: "500",
+    fontSize: 13.5,
+    fontFamily: fonts.bodyMedium,
   },
   segmentTextSelected: {
-    color: "#FFFFFF",
-    fontWeight: "600",
+    color: colors.text,
+    fontFamily: fonts.bodySemiBold,
   },
-});
+}));

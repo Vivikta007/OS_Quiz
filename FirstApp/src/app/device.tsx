@@ -1,19 +1,17 @@
-import Ionicons from "@expo/vector-icons/Ionicons";
 import Constants from "expo-constants";
 import * as Device from "expo-device";
-import type { ComponentProps } from "react";
-import { StyleSheet, View } from "react-native";
+import { View } from "react-native";
 
 import { AppText } from "@/ui/AppText";
+import { Bullet } from "@/ui/Brand";
 import { Card } from "@/ui/Card";
 import { Header } from "@/ui/Header";
 import { Screen } from "@/ui/Screen";
-import { colors, radius, spacing } from "@/ui/theme";
+import { spacing } from "@/ui/theme";
+import { createStyles } from "@/ui/ThemeProvider";
 
 // Read-only details about the phone (expo-device) and the app version
 // (expo-constants) - handy when reporting a bug.
-
-type IconName = ComponentProps<typeof Ionicons>["name"];
 
 function deviceType() {
   switch (Device.deviceType) {
@@ -29,20 +27,18 @@ function deviceType() {
 }
 
 export default function DeviceScreen() {
-  const rows: { icon: IconName; label: string; value: string }[] = [
+  const styles = useStyles();
+  const rows: { label: string; value: string }[] = [
     {
-      icon: "phone-portrait-outline",
       label: "Device",
       value: Device.deviceName ?? Device.modelName ?? "Unknown",
     },
-    { icon: "hardware-chip-outline", label: "Type", value: deviceType() },
+    { label: "Type", value: deviceType() },
     {
-      icon: "layers-outline",
       label: "Operating system",
       value: [Device.osName, Device.osVersion].filter(Boolean).join(" ") || "Unknown",
     },
     {
-      icon: "information-circle-outline",
       label: "App version",
       value: Constants.expoConfig?.version ?? "Unknown",
     },
@@ -56,9 +52,7 @@ export default function DeviceScreen() {
             key={row.label}
             style={[styles.row, index < rows.length - 1 && styles.divider]}
           >
-            <View style={styles.icon}>
-              <Ionicons name={row.icon} size={20} color={colors.accentText} />
-            </View>
+            <Bullet />
             <View style={styles.text}>
               <AppText variant="caption" tone="muted">
                 {row.label}
@@ -72,7 +66,7 @@ export default function DeviceScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createStyles((colors) => ({
   card: {
     marginTop: spacing.md,
     paddingVertical: spacing.xs,
@@ -84,19 +78,11 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md,
   },
   divider: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: 1,
     borderBottomColor: colors.border,
-  },
-  icon: {
-    width: 38,
-    height: 38,
-    borderRadius: radius.sm,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.accentSoft,
   },
   text: {
     flex: 1,
     gap: 2,
   },
-});
+}));

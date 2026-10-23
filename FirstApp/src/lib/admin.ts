@@ -20,4 +20,7 @@ export type AdminQuestion = {
   review_note: string | null; // e.g. the AI checker disagreed
   created_at: string;
   reviewed_at: string | null;
+  // Goes up by one on every change. Saves send the version they started
+  // from, so two admins can't silently overwrite each other (409 Conflict).
+  version: number;
 };

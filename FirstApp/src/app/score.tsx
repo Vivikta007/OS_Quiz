@@ -1,16 +1,16 @@
-import Ionicons from "@expo/vector-icons/Ionicons";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
-import { type ComponentProps, useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { BackHandler, StyleSheet, View } from "react-native";
 
 import { goHome } from "@/lib/navigation";
 import { AppText } from "@/ui/AppText";
+import { Bullet } from "@/ui/Brand";
 import { Button } from "@/ui/Button";
 import { Card } from "@/ui/Card";
+import { Reveal } from "@/ui/Reveal";
 import { Screen } from "@/ui/Screen";
-import { colors, radius, spacing } from "@/ui/theme";
-
-type IconName = ComponentProps<typeof Ionicons>["name"];
+import { fonts, type Palette, spacing } from "@/ui/theme";
+import { createStyles, useTheme } from "@/ui/ThemeProvider";
 
 type AnswerRecord = {
   selectedAnswer: string;
@@ -18,35 +18,54 @@ type AnswerRecord = {
 };
 
 // The headline message and colour depend on how well the quiz went
-function resultFor(percent: number) {
+function resultFor(colors: Palette, percent: number) {
   if (percent >= 80) {
     return {
       title: "Excellent work!",
-      message: "You really know this material.",
       color: colors.success,
-      soft: colors.successSoft,
-      icon: "trophy-outline" as IconName,
     };
   }
   if (percent >= 50) {
     return {
       title: "Good effort",
-      message: "Review the ones you missed to lock them in.",
       color: colors.accent,
-      soft: colors.accentSoft,
-      icon: "thumbs-up-outline" as IconName,
     };
   }
   return {
     title: "Keep practising",
-    message: "Review your answers - every attempt makes it stick.",
     color: colors.warning,
-    soft: colors.warningSoft,
-    icon: "barbell-outline" as IconName,
   };
 }
 
+// Counts from 0 up to `target` with an ease-out, for the big score reveal
+function useCountUp(target: number, delayMs: number, durationMs = 500) {
+  const [value, setValue] = useState(0);
+
+  useEffect(() => {
+    let frame = 0;
+    let startedAt: number | null = null;
+    const timer = setTimeout(() => {
+      const step = (now: number) => {
+        startedAt ??= now;
+        const t = Math.min((now - startedAt) / durationMs, 1);
+        setValue(Math.round(target * (1 - Math.pow(1 - t, 3))));
+        if (t < 1) frame = requestAnimationFrame(step);
+      };
+      frame = requestAnimationFrame(step);
+    }, delayMs);
+
+    return () => {
+      clearTimeout(timer);
+      cancelAnimationFrame(frame);
+    };
+  }, [target, delayMs, durationMs]);
+
+  return value;
+}
+
 export default function ScoreScreen() {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const { score, total, answers, topics, difficulty, questionCount } =
     useLocalSearchParams<{
       score: string;
@@ -76,7 +95,10 @@ export default function ScoreScreen() {
   const scoreNumber = Number(score) || 0;
   const totalNumber = Number(total) || 0;
   const percent = totalNumber ? Math.round((scoreNumber / totalNumber) * 100) : 0;
-  const result = resultFor(percent);
+  const result = resultFor(colors, percent);
+  // Starts once the ring has faded in (Reveal order 3)
+  const shownScore = useCountUp(scoreNumber, 120);
+  const pad = (n: number) => String(n).padStart(2, "0");
 
   let answerList: AnswerRecord[] = [];
   try {
@@ -94,7 +116,6 @@ export default function ScoreScreen() {
         <>
           <Button
             title="Review answers"
-
             onPress={() =>
               router.push({ pathname: "/review", params: { answers } })
             }
@@ -121,69 +142,97 @@ export default function ScoreScreen() {
         </>
       }
     >
+      {/* Set left, not a centred badge */}
       <View style={styles.hero}>
-        <View style={[styles.iconCircle, { backgroundColor: result.soft }]}>
-          <Ionicons name={result.icon} size={30} color={result.color} />
-        </View>
-
-        <AppText variant="title" center>
-          {result.title}
-        </AppText>
-        <AppText variant="small" tone="secondary" center style={styles.message}>
-          {result.message}
-        </AppText>
-
-        {/* SCORE */}
-        <View style={[styles.scoreRing, { borderColor: result.color }]}>
-          <AppText variant="display" style={styles.percent}>
-            {percent}%
+        <Reveal order={0} style={styles.kicker}>
+          <AppText variant="label" tone="muted">
+            Result · {difficulty}
           </AppText>
-          <AppText variant="small" tone="secondary">
-            {scoreNumber} of {totalNumber} correct
-          </AppText>
-        </View>
+        </Reveal>
+
+        <Reveal order={1}>
+          <AppText variant="title">{result.title}</AppText>
+        </Reveal>
+
+        {/* SCORE: a big editorial "07 / 10" */}
+        <Reveal order={3} style={styles.scoreBlock}>
+          <View
+            style={styles.scoreLine}
+            accessible
+            accessibilityLabel={`${scoreNumber} of ${totalNumber} correct, ${percent} percent`}
+          >
+            <AppText style={styles.scoreBig}>{pad(shownScore)}</AppText>
+            <AppText style={styles.scoreOf}> / {pad(totalNumber)}</AppText>
+            <AppText variant="label" style={[styles.scorePercent, { color: result.color }]}>
+              {percent}%
+            </AppText>
+          </View>
+
+          {/* One mark per question, in the order they were asked */}
+          <View style={styles.strip}>
+            {answerList.map((answer, index) => {
+              const correct =
+                !!answer.selectedAnswer && answer.selectedAnswer === answer.correctAnswer;
+              const skippedOne = !answer.selectedAnswer;
+              return (
+                <View
+                  key={index}
+                  style={[
+                    styles.mark,
+                    correct
+                      ? { backgroundColor: colors.success }
+                      : skippedOne
+                        ? styles.markSkipped
+                        : { backgroundColor: colors.danger },
+                  ]}
+                />
+              );
+            })}
+          </View>
+        </Reveal>
       </View>
 
       {/* BREAKDOWN - icon + label + number, so it never relies on colour alone */}
-      <Card style={styles.breakdown}>
-        <Stat
-          icon="checkmark-circle"
-          color={colors.success}
-          label="Correct"
-          value={scoreNumber}
-        />
-        <View style={styles.divider} />
-        <Stat icon="close-circle" color={colors.danger} label="Wrong" value={wrong} />
-        <View style={styles.divider} />
-        <Stat
-          icon="remove-circle"
-          color={colors.textMuted}
-          label="Skipped"
-          value={skipped}
-        />
-      </Card>
+      <Reveal order={4}>
+        <Card style={styles.breakdown}>
+          <Stat
+            color={colors.success}
+            label="Correct"
+            value={scoreNumber}
+          />
+          <View style={styles.divider} />
+          <Stat color={colors.danger} label="Wrong" value={wrong} />
+          <View style={styles.divider} />
+          <Stat
+            color={colors.textMuted}
+            label="Skipped"
+            value={skipped}
+          />
+        </Card>
+      </Reveal>
 
-      <AppText variant="caption" tone="muted" center style={styles.meta}>
-        {difficulty} · saved to your history
-      </AppText>
+      <Reveal order={5}>
+        <AppText variant="caption" tone="muted" center style={styles.meta}>
+          Saved to your history
+        </AppText>
+      </Reveal>
     </Screen>
   );
 }
 
 function Stat({
-  icon,
   color,
   label,
   value,
 }: {
-  icon: IconName;
   color: string;
   label: string;
   value: number;
 }) {
+  const styles = useStyles();
   return (
     <View style={styles.stat}>
-      <Ionicons name={icon} size={20} color={color} />
+      <Bullet style={{ backgroundColor: color }} />
       <AppText variant="heading">{value}</AppText>
       <AppText variant="caption" tone="secondary">
         {label}
@@ -192,39 +241,59 @@ function Stat({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createStyles((colors) => ({
   flex: {
     flex: 1,
   },
   hero: {
-    alignItems: "center",
-    paddingTop: spacing.xxl,
+    paddingTop: spacing.xl,
   },
-  iconCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: radius.pill,
+  kicker: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    marginBottom: spacing.lg,
+    gap: spacing.sm,
+    marginBottom: spacing.md,
   },
-  message: {
+  scoreBlock: {
+    marginTop: spacing.xl,
+    marginBottom: spacing.xl,
+    paddingTop: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  scoreLine: {
+    flexDirection: "row",
+    alignItems: "baseline",
+  },
+  scoreBig: {
+    fontFamily: fonts.bodyBold,
+    fontSize: 84,
+    lineHeight: 92,
+    color: colors.text,
+    letterSpacing: -3,
+  },
+  scoreOf: {
+    fontFamily: fonts.bodySemiBold,
+    fontSize: 30,
+    lineHeight: 36,
+    color: colors.textMuted,
+  },
+  scorePercent: {
+    marginLeft: "auto",
+  },
+  strip: {
+    flexDirection: "row",
+    gap: 3,
     marginTop: spacing.sm,
-    maxWidth: 280,
   },
-  scoreRing: {
-    width: 180,
-    height: 180,
-    borderRadius: 90,
-    borderWidth: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: spacing.xxl,
-    marginBottom: spacing.xxl,
-    backgroundColor: colors.surface,
+  mark: {
+    flex: 1,
+    height: 6,
+    borderRadius: 3,
   },
-  percent: {
-    fontSize: 44,
+  markSkipped: {
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
   },
   breakdown: {
     flexDirection: "row",
@@ -248,4 +317,4 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: spacing.md,
   },
-});
+}));

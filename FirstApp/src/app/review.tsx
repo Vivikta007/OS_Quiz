@@ -1,7 +1,6 @@
-import Ionicons from "@expo/vector-icons/Ionicons";
 import { useLocalSearchParams } from "expo-router";
 import { useState } from "react";
-import { StyleSheet, View } from "react-native";
+import { View } from "react-native";
 
 import { goHome } from "@/lib/navigation";
 import { AppText } from "@/ui/AppText";
@@ -9,9 +8,11 @@ import { Button } from "@/ui/Button";
 import { Card } from "@/ui/Card";
 import { SegmentedControl } from "@/ui/Choice";
 import { Header } from "@/ui/Header";
+import { Reveal } from "@/ui/Reveal";
 import { Screen } from "@/ui/Screen";
 import { StateView } from "@/ui/StateView";
-import { colors, radius, spacing } from "@/ui/theme";
+import { fonts, radius, spacing } from "@/ui/theme";
+import { createStyles, useTheme } from "@/ui/ThemeProvider";
 
 type AnswerRecord = {
   question: string;
@@ -33,6 +34,7 @@ function parseAnswers(raw: string | undefined): AnswerRecord[] {
 }
 
 export default function ReviewScreen() {
+  const styles = useStyles();
   const { answers } = useLocalSearchParams<{ answers?: string }>();
   const answerData = parseAnswers(answers);
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("All");
@@ -55,7 +57,6 @@ export default function ReviewScreen() {
     return (
       <Screen header={header}>
         <StateView
-          icon="document-text-outline"
           title="Nothing to review"
           message="This quiz has no saved answers."
         >
@@ -71,9 +72,14 @@ export default function ReviewScreen() {
       header={header}
       footer={<Button title="Back to home" onPress={goHome} />}
     >
-      <AppText variant="heading" center style={styles.summary}>
-        {correctCount} of {answerData.length} correct
-      </AppText>
+      <View style={styles.summary}>
+        <AppText variant="title" center>
+          {Math.round((correctCount / answerData.length) * 100)}%
+        </AppText>
+        <AppText variant="caption" tone="secondary" center>
+          correct
+        </AppText>
+      </View>
 
       {wrongCount > 0 && (
         <View style={styles.filter}>
@@ -81,16 +87,15 @@ export default function ReviewScreen() {
             options={FILTERS}
             value={filter}
             onChange={setFilter}
-            format={(option) =>
-              option === "All" ? `All (${answerData.length})` : `Wrong (${wrongCount})`
-            }
           />
         </View>
       )}
 
       <View style={styles.list}>
-        {shown.map(({ item, number }) => (
-          <QuestionReview key={number} item={item} number={number} />
+        {shown.map(({ item, number }, index) => (
+          <Reveal key={number} order={Math.min(index, 6)}>
+            <QuestionReview item={item} number={number} />
+          </Reveal>
         ))}
       </View>
     </Screen>
@@ -98,6 +103,8 @@ export default function ReviewScreen() {
 }
 
 function QuestionReview({ item, number }: { item: AnswerRecord; number: number }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const skipped = !item.selectedAnswer;
   const isCorrect = item.selectedAnswer === item.correctAnswer;
 
@@ -110,17 +117,24 @@ function QuestionReview({ item, number }: { item: AnswerRecord; number: number }
         <View
           style={[
             styles.result,
-            { backgroundColor: isCorrect ? colors.successSoft : colors.dangerSoft },
+            {
+              backgroundColor: isCorrect
+                ? colors.successSoft
+                : skipped
+                  ? colors.surfaceRaised
+                  : colors.dangerSoft,
+            },
           ]}
         >
-          <Ionicons
-            name={isCorrect ? "checkmark" : skipped ? "remove" : "close"}
-            size={14}
-            color={isCorrect ? colors.success : colors.danger}
-          />
           <AppText
             variant="caption"
-            style={{ color: isCorrect ? colors.success : colors.danger }}
+            style={{
+              color: isCorrect
+                ? colors.success
+                : skipped
+                  ? colors.textSecondary
+                  : colors.danger,
+            }}
           >
             {isCorrect ? "Correct" : skipped ? "Not answered" : "Incorrect"}
           </AppText>
@@ -143,22 +157,23 @@ function QuestionReview({ item, number }: { item: AnswerRecord; number: number }
                 pickedWrong && styles.wrongOption,
               ]}
             >
-              <AppText
-                variant="small"
-                tone={correct ? "success" : pickedWrong ? "danger" : "secondary"}
-                style={styles.optionLetter}
+              <View
+                style={[
+                  styles.letter,
+                  correct && { backgroundColor: colors.success },
+                  pickedWrong && { backgroundColor: colors.danger },
+                ]}
               >
-                {String.fromCharCode(65 + optionIndex)}
-              </AppText>
+                <AppText
+                  variant="caption"
+                  style={[styles.letterText, (correct || pickedWrong) && styles.letterOn]}
+                >
+                  {String.fromCharCode(65 + optionIndex)}
+                </AppText>
+              </View>
               <AppText variant="small" style={styles.optionText}>
                 {option}
               </AppText>
-              {correct && (
-                <Ionicons name="checkmark-circle" size={18} color={colors.success} />
-              )}
-              {pickedWrong && (
-                <Ionicons name="close-circle" size={18} color={colors.danger} />
-              )}
             </View>
           );
         })}
@@ -166,8 +181,10 @@ function QuestionReview({ item, number }: { item: AnswerRecord; number: number }
 
       {item.explanation && (
         <View style={styles.explanation}>
-          <Ionicons name="bulb-outline" size={16} color={colors.accentText} />
-          <AppText variant="small" tone="secondary" style={styles.explanationText}>
+          <AppText variant="label" tone="accent">
+            Why
+          </AppText>
+          <AppText variant="small" tone="secondary">
             {item.explanation}
           </AppText>
         </View>
@@ -176,7 +193,7 @@ function QuestionReview({ item, number }: { item: AnswerRecord; number: number }
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createStyles((colors) => ({
   summary: {
     marginTop: spacing.sm,
     marginBottom: spacing.lg,
@@ -200,8 +217,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 4,
     paddingHorizontal: spacing.sm,
-    paddingVertical: 4,
-    borderRadius: radius.pill,
+    paddingVertical: 3,
+    borderRadius: radius.sm,
   },
   options: {
     gap: spacing.sm,
@@ -210,12 +227,12 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.md,
-    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm + 2,
+    paddingVertical: spacing.sm + 2,
+    borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.border,
-    backgroundColor: colors.surfaceRaised,
+    backgroundColor: colors.surface,
   },
   correctOption: {
     borderColor: colors.success,
@@ -225,21 +242,28 @@ const styles = StyleSheet.create({
     borderColor: colors.danger,
     backgroundColor: colors.dangerSoft,
   },
-  optionLetter: {
-    fontWeight: "700",
-    width: 16,
+  letter: {
+    width: 26,
+    height: 26,
+    borderRadius: radius.sm,
+    backgroundColor: colors.surfaceRaised,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  letterText: {
+    fontFamily: fonts.bodySemiBold,
+    color: colors.textSecondary,
+  },
+  letterOn: {
+    color: colors.onAccent,
   },
   optionText: {
     flex: 1,
   },
   explanation: {
-    flexDirection: "row",
-    gap: spacing.sm,
+    gap: spacing.xs,
     padding: spacing.md,
-    borderRadius: radius.sm,
+    borderRadius: radius.md,
     backgroundColor: colors.accentSoft,
   },
-  explanationText: {
-    flex: 1,
-  },
-});
+}));

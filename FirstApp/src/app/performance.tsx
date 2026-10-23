@@ -1,61 +1,55 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { router } from "expo-router";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Pressable, View } from "react-native";
 
 import { apiRequest } from "@/lib/api";
 import { AppText } from "@/ui/AppText";
+import { Bullet } from "@/ui/Brand";
 import { Button } from "@/ui/Button";
+import { Card } from "@/ui/Card";
 import { tapHaptic } from "@/ui/haptics";
 import { Header } from "@/ui/Header";
+import { Reveal } from "@/ui/Reveal";
 import { Screen } from "@/ui/Screen";
 import { StateView } from "@/ui/StateView";
-import { colors, radius, spacing } from "@/ui/theme";
+import { TabBar } from "@/ui/TabBar";
+import { type Palette, radius, spacing } from "@/ui/theme";
+import { createStyles, useTheme } from "@/ui/ThemeProvider";
 
-// Performance report. All numbers are calculated by the backend
-// (GET /performance) from this user's saved quiz attempts.
+// Progress report. All numbers are calculated by the backend
+// (GET /performance) from this user's saved quiz attempts. Only
+// percentages are shown - never how many questions there are.
 
 type RecentAttempt = {
   id: number;
   created_at: string;
-  score: number;
-  total_questions: number;
   difficulty: string;
   percent: number;
 };
 
 type BreakdownRow = {
   name: string;
-  correct: number;
   total: number;
   accuracy: number;
-};
-
-// One quiz's result for a single topic (only that topic's questions)
-type TopicQuiz = {
-  id: number;
-  created_at: string;
-  difficulty: string;
-  correct: number;
-  total: number;
-  percent: number;
 };
 
 type TopicRow = BreakdownRow & {
   difficulties: BreakdownRow[];
-  quizzes: TopicQuiz[];
 };
 
 type Performance = {
   total_attempts: number;
-  total_questions: number;
-  total_correct: number;
   accuracy: number;
   best_score: number;
-  recent: RecentAttempt[];
-  topics: TopicRow[];
+  recent: RecentAttempt[]; // oldest first
+  topics: TopicRow[]; // best first
   difficulties: BreakdownRow[];
+  weakest_topic: string | null;
+  strongest_topic: string | null;
 };
+
+const RECENT_SHOWN = 5;
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, {
@@ -66,16 +60,20 @@ function formatDate(iso: string) {
   });
 }
 
+// Teal when it's going well, amber when it needs work
+function barColor(colors: Palette, percent: number) {
+  return percent >= 50 ? colors.accent : colors.warning;
+}
+
 export default function PerformanceScreen() {
+  const styles = useStyles();
+  const { colors } = useTheme();
   const [data, setData] = useState<Performance | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [openingId, setOpeningId] = useState<number | null>(null);
   const [openTopic, setOpenTopic] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  // Each list can be collapsed to its heading
-  const [showRecent, setShowRecent] = useState(true);
-  const [showTopics, setShowTopics] = useState(true);
 
   const loadPerformance = () =>
     apiRequest("/performance", { auth: true })
@@ -87,18 +85,13 @@ export default function PerformanceScreen() {
         setError(
           loadError instanceof Error
             ? loadError.message
-            : "Could not load your performance.",
+            : "Could not load your progress.",
         );
       })
       .finally(() => {
         setLoading(false);
         setRefreshing(false);
       });
-
-  const refresh = () => {
-    setRefreshing(true);
-    loadPerformance();
-  };
 
   useEffect(() => {
     loadPerformance();
@@ -130,9 +123,17 @@ export default function PerformanceScreen() {
     }
   };
 
+  const practise = (topic: string) => {
+    tapHaptic();
+    router.push({ pathname: "/quizInit", params: { topic } });
+  };
+
+  const header = <Header title="Progress" hideBack />;
+  const tabBar = <TabBar active="performance" />;
+
   if (loading) {
     return (
-      <Screen header={<Header title="Performance" />}>
+      <Screen header={header} tabBar={tabBar}>
         <StateView loading />
       </Screen>
     );
@@ -140,13 +141,8 @@ export default function PerformanceScreen() {
 
   if (!data) {
     return (
-      <Screen header={<Header title="Performance" />}>
-        <StateView
-          icon="cloud-offline-outline"
-          tone="danger"
-          title="Couldn't load your results"
-          message={error}
-        >
+      <Screen header={header} tabBar={tabBar}>
+        <StateView tone="danger" title="Couldn't load your progress" message={error}>
           <Button title="Try again" variant="secondary" onPress={retry} />
         </StateView>
       </Screen>
@@ -155,451 +151,296 @@ export default function PerformanceScreen() {
 
   if (data.total_attempts === 0) {
     return (
-      <Screen header={<Header title="Performance" />}>
+      <Screen header={header} tabBar={tabBar}>
         <StateView
-          icon="stats-chart-outline"
           title="No results yet"
-          message="Finish a quiz and your accuracy, strongest topics and progress will appear here."
+          message="Finish a quiz and your accuracy and strongest topics will appear here."
         >
-          <Button
-            title="Start a quiz"
-            onPress={() => router.push("/quizInit")}
-          />
+          <Button title="Start a quiz" onPress={() => router.push("/quizInit")} />
         </StateView>
       </Screen>
     );
   }
 
-  // Newest first for the list
-  const recent = [...data.recent].reverse();
+  const recent = [...data.recent].reverse().slice(0, RECENT_SHOWN);
+  const showFocus =
+    data.strongest_topic &&
+    data.weakest_topic &&
+    data.strongest_topic !== data.weakest_topic;
 
   return (
     <Screen
       scroll
-      header={<Header title="Performance" />}
-      onRefresh={refresh}
+      header={header}
+      tabBar={tabBar}
+      onRefresh={() => {
+        setRefreshing(true);
+        loadPerformance();
+      }}
       refreshing={refreshing}
     >
       {error && (
-        <AppText
-          variant="small"
-          tone="danger"
-          center
-          style={styles.refreshError}
-        >
+        <AppText variant="small" tone="danger" center style={styles.error}>
           {error}
         </AppText>
       )}
-      {/* SUMMARY */}
-      <View style={styles.summary}>
-        <Summary value={`${data.total_attempts}`} label="Quizzes" />
-        <View style={styles.summaryDivider} />
-        <Summary value={`${data.accuracy}%`} label="Accuracy" />
-        <View style={styles.summaryDivider} />
-        <Summary value={`${data.best_score}%`} label="Best" />
-      </View>
-      <AppText variant="caption" tone="muted" style={styles.note}>
-        {data.total_correct} of {data.total_questions} questions answered
-        correctly
-      </AppText>
+
+      {/* OVERVIEW */}
+      <Reveal order={0}>
+        <Card tinted style={styles.overview}>
+          <AppText variant="label" tone="accent">
+            Overall accuracy
+          </AppText>
+          <AppText variant="display">{data.accuracy}%</AppText>
+          <Bar percent={data.accuracy} />
+          <View style={styles.overviewStats}>
+            <View style={styles.flex}>
+              <AppText variant="heading">{data.total_attempts}</AppText>
+              <AppText variant="caption" tone="secondary">
+                {data.total_attempts === 1 ? "Quiz taken" : "Quizzes taken"}
+              </AppText>
+            </View>
+            <View style={styles.flex}>
+              <AppText variant="heading">{data.best_score}%</AppText>
+              <AppText variant="caption" tone="secondary">
+                Best score
+              </AppText>
+            </View>
+          </View>
+        </Card>
+      </Reveal>
+
+      {/* STRONGEST / WEAKEST */}
+      {showFocus && (
+        <Reveal order={1}>
+          <Card style={styles.focus}>
+            <View style={styles.focusRow}>
+              <Bullet />
+              <View style={styles.flex}>
+                <AppText variant="caption" tone="muted">
+                  Strongest topic
+                </AppText>
+                <AppText variant="bodyStrong">{data.strongest_topic}</AppText>
+              </View>
+            </View>
+            <View style={styles.divider} />
+            <View style={styles.focusRow}>
+              <Bullet style={{ backgroundColor: colors.warning }} />
+              <View style={styles.flex}>
+                <AppText variant="caption" tone="muted">
+                  Needs practice
+                </AppText>
+                <AppText variant="bodyStrong">{data.weakest_topic}</AppText>
+              </View>
+              <Button
+                title="Practice"
+                size="sm"
+                variant="secondary"
+                onPress={() => practise(data.weakest_topic!)}
+              />
+            </View>
+          </Card>
+        </Reveal>
+      )}
+
+      {/* BY DIFFICULTY */}
+      {data.difficulties.length > 0 && (
+        <Reveal order={2}>
+          <AppText variant="heading" style={styles.sectionTitle}>
+            By difficulty
+          </AppText>
+          <View style={styles.levels}>
+            {data.difficulties.map((level) => (
+              <Card key={level.name} style={styles.level}>
+                <AppText variant="caption" tone="secondary">
+                  {level.name}
+                </AppText>
+                <AppText variant="heading">
+                  {level.total > 0 ? `${level.accuracy}%` : "-"}
+                </AppText>
+                <Bar percent={level.total > 0 ? level.accuracy : 0} />
+              </Card>
+            ))}
+          </View>
+        </Reveal>
+      )}
+
+      {/* TOPICS */}
+      {data.topics.length > 0 && (
+        <Reveal order={3}>
+          <AppText variant="heading" style={styles.sectionTitle}>
+            Topics
+          </AppText>
+          <View style={styles.group}>
+            {data.topics.map((topic, index) => {
+              const open = openTopic === topic.name;
+              return (
+                <View key={topic.name} style={index > 0 && styles.rowDivider}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ expanded: open }}
+                    onPress={() => {
+                      tapHaptic();
+                      setOpenTopic(open ? null : topic.name);
+                    }}
+                    style={({ pressed }) => [styles.topicRow, pressed && styles.pressed]}
+                  >
+                    <View style={styles.topicTop}>
+                      <Bullet />
+                      <AppText variant="bodyStrong" style={styles.flex} numberOfLines={1}>
+                        {topic.name}
+                      </AppText>
+                      <AppText variant="bodyStrong">{topic.accuracy}%</AppText>
+                      <Ionicons
+                        name={open ? "chevron-up" : "chevron-down"}
+                        size={16}
+                        color={colors.textMuted}
+                      />
+                    </View>
+                    <Bar percent={topic.accuracy} />
+                  </Pressable>
+
+                  {open && (
+                    <View style={styles.topicDetails}>
+                      <View style={styles.splits}>
+                        {topic.difficulties.map((level) => (
+                          <View key={level.name} style={styles.split}>
+                            <AppText variant="caption" tone="muted">
+                              {level.name}
+                            </AppText>
+                            <AppText variant="bodyStrong">
+                              {level.total > 0 ? `${level.accuracy}%` : "-"}
+                            </AppText>
+                          </View>
+                        ))}
+                      </View>
+                      <Button
+                        title="Practise this topic"
+                        size="sm"
+                        variant="secondary"
+                        onPress={() => practise(topic.name)}
+                      />
+                    </View>
+                  )}
+                </View>
+              );
+            })}
+          </View>
+        </Reveal>
+      )}
 
       {/* RECENT QUIZZES */}
-      <SectionToggle
-        label="Recent quizzes"
-        count={recent.length}
-        open={showRecent}
-        onToggle={() => setShowRecent(!showRecent)}
-      />
-      {showRecent && (
+      <Reveal order={4}>
+        <View style={styles.sectionHeader}>
+          <AppText variant="heading">Recent quizzes</AppText>
+          {data.recent.length > RECENT_SHOWN && (
+            <Pressable hitSlop={10} onPress={() => router.replace("/history")}>
+              <AppText variant="caption" tone="accent">
+                See all
+              </AppText>
+            </Pressable>
+          )}
+        </View>
         <View style={styles.group}>
           {recent.map((attempt, index) => (
             <Pressable
               key={attempt.id}
               accessibilityRole="button"
+              accessibilityLabel={`${attempt.percent} percent, ${attempt.difficulty}. Open review`}
               onPress={() => openAttempt(attempt.id)}
               disabled={openingId !== null}
               style={({ pressed }) => [
-                styles.row,
+                styles.recentRow,
                 index > 0 && styles.rowDivider,
-                pressed && styles.rowPressed,
+                pressed && styles.pressed,
               ]}
             >
               <View style={styles.flex}>
-                <AppText variant="body">
-                  {formatDate(attempt.created_at)}
-                </AppText>
+                <AppText variant="body">{formatDate(attempt.created_at)}</AppText>
                 <AppText variant="caption" tone="muted">
                   {attempt.difficulty}
                 </AppText>
               </View>
-
               {openingId === attempt.id ? (
                 <ActivityIndicator size="small" color={colors.accent} />
               ) : (
                 <>
-                  <View style={styles.scoreCol}>
-                    <AppText variant="bodyStrong">
-                      {attempt.score}/{attempt.total_questions}
-                    </AppText>
-                    <AppText variant="caption" tone="muted">
-                      {attempt.percent}%
-                    </AppText>
-                  </View>
-                  <Ionicons
-                    name="chevron-forward"
-                    size={16}
-                    color={colors.textMuted}
-                  />
+                  <AppText
+                    variant="bodyStrong"
+                    style={{ color: barColor(colors, attempt.percent) }}
+                  >
+                    {attempt.percent}%
+                  </AppText>
+                  <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
                 </>
               )}
             </Pressable>
           ))}
         </View>
-      )}
-
-      {/* BY TOPIC */}
-      {data.topics.length > 0 && (
-        <>
-          <SectionToggle
-            label="By topic"
-            count={data.topics.length}
-            open={showTopics}
-            onToggle={() => setShowTopics(!showTopics)}
-          />
-          {showTopics && (
-            <View style={styles.group}>
-              {data.topics.map((topic, index) => (
-                <TopicDropdown
-                  key={topic.name}
-                  topic={topic}
-                  first={index === 0}
-                  open={openTopic === topic.name}
-                  onToggle={() =>
-                    setOpenTopic(openTopic === topic.name ? null : topic.name)
-                  }
-                  openingId={openingId}
-                  onOpenQuiz={openAttempt}
-                />
-              ))}
-            </View>
-          )}
-        </>
-      )}
-
-      {/* BY DIFFICULTY */}
-      {data.difficulties.length > 0 && (
-        <>
-          <AppText variant="label" tone="muted" style={styles.sectionLabel}>
-            By difficulty
-          </AppText>
-          <Breakdown rows={data.difficulties} />
-        </>
-      )}
+      </Reveal>
     </Screen>
   );
 }
 
-// A section heading that collapses/expands the list under it
-function SectionToggle({
-  label,
-  count,
-  open,
-  onToggle,
-}: {
-  label: string;
-  count: number;
-  open: boolean;
-  onToggle: () => void;
-}) {
+// A thin progress bar
+function Bar({ percent }: { percent: number }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ expanded: open }}
-      accessibilityLabel={`${label}, ${open ? "collapse" : "expand"}`}
-      hitSlop={6}
-      onPress={() => {
-        tapHaptic();
-        onToggle();
-      }}
-      style={({ pressed }) => [
-        styles.sectionToggle,
-        pressed && styles.togglePressed,
-      ]}
-    >
-      <AppText variant="label" tone="muted" style={styles.flex}>
-        {label} ({count})
-      </AppText>
-      <AppText variant="caption" tone="accent">
-        {open ? "Hide" : "Show"}
-      </AppText>
-      <Ionicons
-        name={open ? "chevron-up" : "chevron-down"}
-        size={16}
-        color={colors.accentText}
-      />
-    </Pressable>
-  );
-}
-
-function Summary({ value, label }: { value: string; label: string }) {
-  return (
-    <View style={styles.summaryItem}>
-      <AppText variant="title">{value}</AppText>
-      <AppText variant="caption" tone="secondary">
-        {label}
-      </AppText>
-    </View>
-  );
-}
-
-// A topic row that opens to show its results by difficulty and every
-// quiz it appeared in (tap a quiz to review it).
-function TopicDropdown({
-  topic,
-  first,
-  open,
-  onToggle,
-  openingId,
-  onOpenQuiz,
-}: {
-  topic: TopicRow;
-  first: boolean;
-  open: boolean;
-  onToggle: () => void;
-  openingId: number | null;
-  onOpenQuiz: (attemptId: number) => void;
-}) {
-  return (
-    <View style={!first && styles.rowDivider}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-        onPress={() => {
-          tapHaptic();
-          onToggle();
-        }}
-        style={({ pressed }) => [
-          styles.breakdownRow,
-          pressed && styles.rowPressed,
+    <View style={styles.track}>
+      <View
+        style={[
+          styles.fill,
+          { width: `${percent}%`, backgroundColor: barColor(colors, percent) },
         ]}
-      >
-        <View style={styles.breakdownTop}>
-          <AppText variant="body" style={styles.flex} numberOfLines={1}>
-            {topic.name}
-          </AppText>
-          <AppText variant="caption" tone="muted">
-            {topic.correct}/{topic.total}
-          </AppText>
-          <AppText variant="bodyStrong" style={styles.percent}>
-            {topic.accuracy}%
-          </AppText>
-          <Ionicons
-            name={open ? "chevron-up" : "chevron-down"}
-            size={16}
-            color={colors.textMuted}
-          />
-        </View>
-        <View style={styles.track}>
-          <View style={[styles.fill, { width: `${topic.accuracy}%` }]} />
-        </View>
-      </Pressable>
-
-      {open && (
-        <View style={styles.details}>
-          <View style={styles.levels}>
-            {topic.difficulties.map((level) => (
-              <View key={level.name} style={styles.level}>
-                <AppText variant="bodyStrong">{level.accuracy}%</AppText>
-                <AppText variant="caption" tone="muted">
-                  {level.name} · {level.correct}/{level.total}
-                </AppText>
-              </View>
-            ))}
-          </View>
-
-          <AppText variant="caption" tone="muted" style={styles.detailsLabel}>
-            Quizzes with this topic ({topic.quizzes.length})
-          </AppText>
-          {topic.quizzes.map((quiz) => (
-            <Pressable
-              key={quiz.id}
-              accessibilityRole="button"
-              onPress={() => onOpenQuiz(quiz.id)}
-              disabled={openingId !== null}
-              style={({ pressed }) => [
-                styles.quizRow,
-                pressed && styles.rowPressed,
-              ]}
-            >
-              <View style={styles.flex}>
-                <AppText variant="small">{formatDate(quiz.created_at)}</AppText>
-                <AppText variant="caption" tone="muted">
-                  {quiz.difficulty}
-                </AppText>
-              </View>
-              {openingId === quiz.id ? (
-                <ActivityIndicator size="small" color={colors.accent} />
-              ) : (
-                <>
-                  <AppText variant="small" tone="secondary">
-                    {quiz.correct}/{quiz.total} · {quiz.percent}%
-                  </AppText>
-                  <Ionicons
-                    name="chevron-forward"
-                    size={14}
-                    color={colors.textMuted}
-                  />
-                </>
-              )}
-            </Pressable>
-          ))}
-        </View>
-      )}
+      />
     </View>
   );
 }
 
-// A list of rows: name, correct/total, percentage and a thin bar
-function Breakdown({ rows }: { rows: BreakdownRow[] }) {
-  return (
-    <View style={styles.group}>
-      {rows.map((row, index) => (
-        <View
-          key={row.name}
-          style={[styles.breakdownRow, index > 0 && styles.rowDivider]}
-        >
-          <View style={styles.breakdownTop}>
-            <AppText variant="body" style={styles.flex} numberOfLines={1}>
-              {row.name}
-            </AppText>
-            <AppText variant="caption" tone="muted">
-              {row.correct}/{row.total}
-            </AppText>
-            <AppText variant="bodyStrong" style={styles.percent}>
-              {row.accuracy}%
-            </AppText>
-          </View>
-          <View style={styles.track}>
-            <View style={[styles.fill, { width: `${row.accuracy}%` }]} />
-          </View>
-        </View>
-      ))}
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  refreshError: {
-    marginBottom: spacing.md,
-  },
+const useStyles = createStyles((colors) => ({
   flex: {
     flex: 1,
   },
-  // SUMMARY
-
-  summary: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: spacing.md,
-    paddingVertical: spacing.lg,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-  },
-  summaryItem: {
-    flex: 1,
-    alignItems: "center",
-    gap: 2,
-  },
-  summaryDivider: {
-    width: StyleSheet.hairlineWidth,
-    alignSelf: "stretch",
-    backgroundColor: colors.border,
-  },
-  note: {
-    marginTop: spacing.sm,
-    textAlign: "center",
-  },
-
-  // LISTS
-
-  sectionToggle: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    // Same spacing as the plain section labels
-    marginTop: spacing.xxl - spacing.xs,
-    marginBottom: spacing.md - spacing.xs,
-    paddingVertical: spacing.xs,
-  },
-  togglePressed: {
-    opacity: 0.6,
-  },
-  sectionLabel: {
-    marginTop: spacing.xxl,
+  error: {
     marginBottom: spacing.md,
   },
-  group: {
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    overflow: "hidden",
-  },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    minHeight: 60,
-  },
-  rowDivider: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
-  },
-  rowPressed: {
-    backgroundColor: colors.surfaceRaised,
-  },
-  scoreCol: {
-    alignItems: "flex-end",
-  },
-
-  // BREAKDOWN
-
-  breakdownRow: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
+  overview: {
+    marginTop: spacing.sm,
     gap: spacing.sm,
+    padding: spacing.lg + 2,
   },
-  breakdownTop: {
+  overviewStats: {
+    flexDirection: "row",
+    marginTop: spacing.sm,
+    paddingTop: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.surface,
+  },
+  focus: {
+    marginTop: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  focusRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
+    paddingVertical: spacing.sm,
   },
-  percent: {
-    width: 46,
-    textAlign: "right",
+  divider: {
+    height: 1,
+    backgroundColor: colors.border,
   },
-  track: {
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.surfaceRaised,
-    overflow: "hidden",
+  sectionTitle: {
+    marginTop: spacing.xl,
+    marginBottom: spacing.md,
   },
-  fill: {
-    height: "100%",
-    borderRadius: 2,
-    backgroundColor: colors.accent,
-  },
-
-  // TOPIC DROPDOWN
-
-  details: {
-    paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.md,
-    gap: spacing.xs,
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: spacing.xl,
+    marginBottom: spacing.md,
   },
   levels: {
     flexDirection: "row",
@@ -607,20 +448,64 @@ const styles = StyleSheet.create({
   },
   level: {
     flex: 1,
+    padding: spacing.md,
+    gap: spacing.xs,
+  },
+  group: {
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    overflow: "hidden",
+  },
+  rowDivider: {
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  pressed: {
+    backgroundColor: colors.surfaceRaised,
+  },
+  topicRow: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    gap: spacing.sm,
+  },
+  topicTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+  },
+  topicDetails: {
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+    gap: spacing.md,
+  },
+  splits: {
+    flexDirection: "row",
+    gap: spacing.sm,
+  },
+  split: {
+    flex: 1,
     alignItems: "center",
     paddingVertical: spacing.sm,
     borderRadius: radius.sm,
     backgroundColor: colors.surfaceRaised,
   },
-  detailsLabel: {
-    marginTop: spacing.md,
-  },
-  quizRow: {
+  recentRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.sm,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.sm,
-    borderRadius: radius.sm,
+    gap: spacing.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
   },
-});
+  track: {
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: colors.surfaceRaised,
+    overflow: "hidden",
+  },
+  fill: {
+    height: "100%",
+    borderRadius: 3,
+  },
+}));

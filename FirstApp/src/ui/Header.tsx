@@ -1,11 +1,12 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
 import type { ComponentProps, ReactNode } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { Pressable, View } from "react-native";
 
 import { goBack } from "@/lib/navigation";
 import { AppText } from "@/ui/AppText";
 import { tapHaptic } from "@/ui/haptics";
-import { colors, layout, radius, spacing } from "@/ui/theme";
+import { layout, radius, spacing } from "@/ui/theme";
+import { createStyles, useTheme } from "@/ui/ThemeProvider";
 
 type IconName = ComponentProps<typeof Ionicons>["name"];
 
@@ -18,7 +19,8 @@ type Props = {
   right?: ReactNode;
 };
 
-// Top bar: back arrow on the left, title in the middle, optional action right.
+// Top bar: back arrow, then the title set left (not centred), and an
+// optional action on the right.
 export function Header({
   title,
   onBack,
@@ -26,17 +28,16 @@ export function Header({
   hideBack,
   right,
 }: Props) {
+  const styles = useStyles();
   return (
     <View style={styles.header}>
-      <View style={styles.side}>
-        {!hideBack && (
-          <IconButton
-            icon={backIcon}
-            label="Back"
-            onPress={onBack ?? (() => goBack())}
-          />
-        )}
-      </View>
+      {!hideBack && (
+        <IconButton
+          icon={backIcon}
+          label="Back"
+          onPress={onBack ?? (() => goBack())}
+        />
+      )}
 
       <AppText variant="heading" numberOfLines={1} style={styles.title}>
         {title}
@@ -57,6 +58,8 @@ export function IconButton({
   label: string;
   onPress: () => void;
 }) {
+  const styles = useStyles();
+  const { colors } = useTheme();
   return (
     <Pressable
       accessibilityRole="button"
@@ -71,32 +74,32 @@ export function IconButton({
         pressed && styles.iconButtonPressed,
       ]}
     >
-      <Ionicons name={icon} size={22} color={colors.text} />
+      <Ionicons name={icon} size={20} color={colors.text} />
     </Pressable>
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createStyles((colors) => ({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: spacing.md,
-    height: 56,
+    gap: spacing.md,
+    paddingHorizontal: layout.screenPadding,
+    height: 60,
   },
   side: {
-    width: 56,
     flexDirection: "row",
   },
   right: {
     justifyContent: "flex-end",
+    gap: spacing.sm,
   },
   title: {
     flex: 1,
-    textAlign: "center",
   },
   iconButton: {
-    width: 40,
-    height: 40,
+    width: 38,
+    height: 38,
     borderRadius: radius.pill,
     alignItems: "center",
     justifyContent: "center",
@@ -107,4 +110,4 @@ const styles = StyleSheet.create({
   iconButtonPressed: {
     backgroundColor: colors.surfaceRaised,
   },
-});
+}));

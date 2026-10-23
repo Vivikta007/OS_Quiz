@@ -113,6 +113,42 @@ except qg.GenerationError as error:
     assert "all down" in str(error)
 print("parallel parts: ok")
 
+# From a document: PDFs are attached as a document block, text is inlined,
+# and the AI's topics are matched to existing ones (new ones are kept)
+calls = []
+
+def document_ask(client, instructions, prompt, schema, thinking="medium"):
+    calls.append(prompt)
+    if schema is CheckedBatch:
+        return CheckedBatch(answers=[])
+    return GeneratedBatch(questions=[
+        GeneratedQuestion(question="From the doc 1?", topic="cpu  scheduling",
+                          options=["A", "B", "C", "D"], correct_index=0, explanation="."),
+        GeneratedQuestion(question="From the doc 2?", topic="Disk Scheduling",
+                          options=["A", "B", "C", "D"], correct_index=1, explanation="."),
+        GeneratedQuestion(question="No topic?", topic=" ",
+                          options=["A", "B", "C", "D"], correct_index=1, explanation="."),
+    ])
+
+qg._ask = document_ask
+pdf = qg.Document(name="notes.pdf", pdf=b"%PDF-1.4 fake")
+created, skipped = generate_questions(
+    None, "Easy", 3, [], document=pdf, known_topics=["CPU Scheduling", "Paging"]
+)
+assert [c["topic"] for c in created] == ["CPU Scheduling", "Disk Scheduling"], created
+assert any("has no topic" in s for s in skipped)
+writer_input = calls[0]
+assert writer_input[0]["type"] == "document" and writer_input[0]["mime_type"] == "application/pdf"
+assert "CPU Scheduling, Paging" in writer_input[1]["text"]  # existing topics offered
+assert isinstance(calls[1], list)  # the checker gets the document too
+
+calls.clear()
+notes = qg.Document(name="notes.txt", text="Paging splits memory into frames.")
+created, _ = generate_questions("Paging", "Easy", 2, [], document=notes)
+assert all(c["topic"] == "Paging" for c in created)  # a fixed topic always wins
+assert "Paging splits memory into frames." in calls[0] and "Topic: Paging" in calls[0]
+print("from a document: ok")
+
 # A missing API key gives a clear error instead of a crash
 os.environ.pop("GEMINI_API_KEY", None)
 import importlib
@@ -177,8 +213,9 @@ class FakeQuery:
 inserted = []
 main.question_bank_client = lambda: FakeQuery(inserted)
 main.run_query = lambda query, action: type("Result", (), {"data": []})()
-main.generate_questions = lambda *args: (
-    [{"question": "New?"}, {"question": "Duplicate?"}],
+main.generate_questions = lambda *args, **kwargs: (
+    [{"question": "New?", "topic": "CPU Scheduling"},
+     {"question": "Duplicate?", "topic": "CPU Scheduling"}],
     ["Bad one: has 3 options instead of 4"],
 )
 main.app.dependency_overrides[main.get_current_user] = lambda: FakeUser({"role": "admin"})
@@ -193,10 +230,10 @@ job_id = response.json()["job_id"]
 job = client.get(f"/admin/generate/{job_id}").json()
 assert job["status"] == "done", job
 assert job["topic"] == "CPU Scheduling"
-assert job["created"] == 1 and inserted == [{"question": "New?"}]
+assert job["created"] == 1 and [row["question"] for row in inserted] == ["New?"]
 assert len(job["skipped"]) == 2 and any("already exists" in s for s in job["skipped"])
 
-def failing_generate(*args):
+def failing_generate(*args, **kwargs):
     raise main.GenerationError("The AI service is unavailable")
 main.generate_questions = failing_generate
 job_id = client.post("/admin/generate", json={"topic": "X Topic", "difficulty": "Easy"}).json()["job_id"]
@@ -204,7 +241,69 @@ job = client.get(f"/admin/generate/{job_id}").json()
 assert job["status"] == "failed" and "unavailable" in job["error"]
 
 assert client.get("/admin/generate/unknown-job").status_code == 404
-main.app.dependency_overrides.clear()
 print("background job: ok")
+
+
+# --- Questions from an uploaded document -----------------------------------
+import io
+
+import docx
+
+received = {}
+
+def capture_generate(topic, difficulty, count, existing, guidance, document=None, known_topics=None):
+    received.update(topic=topic, document=document, known_topics=known_topics)
+    return (
+        [{"question": "Doc question 1?", "topic": "Paging"},
+         {"question": "Doc question 2?", "topic": "Disk Scheduling"}],
+        [],
+    )
+
+main.generate_questions = capture_generate
+main.run_query = lambda query, action: type("Result", (), {"data": [
+    {"question": "Old?", "topic": "Paging", "status": "active"},
+    {"question": "Rejected?", "topic": "Old Topic", "status": "rejected"},
+]})()
+inserted.clear()
+
+def upload(name, content, **form):
+    return client.post(
+        "/admin/generate-from-document",
+        files={"file": (name, content)},
+        data={"difficulty": "Medium", "count": "2", **form},
+    )
+
+long_text = "Paging divides memory into fixed-size frames. " * 10
+
+response = upload("notes.txt", long_text.encode())
+assert response.status_code == 202, response.text
+job = client.get(f"/admin/generate/{response.json()['job_id']}").json()
+assert job["status"] == "done" and job["created"] == 2 and job["document"] == "notes.txt"
+assert job["new_topics"] == ["Disk Scheduling"]  # Paging is already live
+assert received["topic"] is None  # no topic sent = let the AI find them
+assert received["document"].text.startswith("Paging divides")
+assert received["known_topics"] == ["Paging"]  # rejected-only topics aren't offered
+
+word = docx.Document()
+word.add_paragraph(long_text)
+buffer = io.BytesIO()
+word.save(buffer)
+response = upload("notes.docx", buffer.getvalue(), topic="  Memory   Management ")
+assert response.status_code == 202, response.text
+assert received["topic"] == "Memory Management"
+assert "Paging divides" in received["document"].text
+
+assert upload("slides.pdf", b"%PDF-1.7 ...").status_code == 202
+assert received["document"].pdf.startswith(b"%PDF")
+
+assert upload("virus.exe", b"MZ...").status_code == 415
+assert upload("fake.pdf", b"not a pdf").status_code == 400
+assert upload("short.txt", b"Too short.").status_code == 400
+assert upload("big.txt", b"x" * (10 * 1024 * 1024 + 1)).status_code == 413
+
+main.app.dependency_overrides[main.get_current_user] = lambda: FakeUser({"role": "user"})
+assert upload("notes.txt", long_text.encode()).status_code == 403
+main.app.dependency_overrides.clear()
+print("document upload: ok")
 
 print("\nAll checks passed.")

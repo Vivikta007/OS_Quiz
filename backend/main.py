@@ -1,3 +1,4 @@
+import io
 import os
 import random
 import threading
@@ -13,10 +14,13 @@ from fastapi import (
     BackgroundTasks,
     Depends,
     FastAPI,
+    File,
+    Form,
     Header,
     HTTPException,
     Query,
     Request,
+    UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -26,7 +30,7 @@ from supabase import Client, ClientOptions, create_client
 from supabase_auth.errors import AuthApiError, AuthError, AuthRetryableError
 
 from adaptive import answer_history, pick_adaptive, skill_level
-from question_generator import GenerationError, generate_questions
+from question_generator import Document, GenerationError, generate_questions
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
@@ -629,24 +633,43 @@ def create_quiz_attempt(
 
     # Mark each answer. The correct answer comes from the database,
     # so the app can't change the score.
+    #
+    # An admin may edit or remove a question while someone is mid-quiz, so
+    # the options the player saw can differ from the database by now. That
+    # must not throw away their whole quiz: each answer is graded against
+    # the answer key as it is NOW, and counts as correct only if it is the
+    # current correct option - so sending made-up options can never raise
+    # a score.
     graded_answers = []
     for answer in data.answers:
         question = questions_by_id.get(answer.question_id)
+        if question is None:
+            continue  # deleted from the database since the quiz started
 
-        if question is None or sorted(answer.options) != sorted(question["options"]):
-            raise HTTPException(status_code=422, detail="Invalid answer data")
+        # The pick must be one of the options this quiz showed
         if answer.selected_answer and answer.selected_answer not in answer.options:
             raise HTTPException(status_code=422, detail="Invalid answer data")
 
+        unchanged = sorted(answer.options) == sorted(question["options"])
         graded_answers.append({
             "question_id": question["id"],
             "question": question["question"],
-            "options": answer.options,  # in the order the user saw them
+            # In the order the user saw them - or, if the question was edited
+            # during the quiz, the current options (so Review shows the
+            # current correct answer)
+            "options": answer.options if unchanged else question["options"],
             "selectedAnswer": answer.selected_answer,
             "correctAnswer": question["options"][question["correct_index"]],
             # Shown on the Review screen (older attempts don't have it)
             "explanation": question.get("explanation"),
         })
+
+    if not graded_answers:
+        raise HTTPException(
+            status_code=422,
+            detail="These questions were removed while you were answering. "
+                   "Please start a new quiz.",
+        )
 
     score = sum(
         1 for answer in graded_answers
@@ -694,17 +717,48 @@ def list_quiz_attempts(
     user=Depends(get_current_user),
     access_token: str = Depends(get_access_token),
 ):
-    """The logged-in user's attempts, newest first (without the answers)."""
-    result = run_query(
+    """The logged-in user's attempts, newest first (without the answers).
+
+    `topics` lists only the topics the user actually answered questions in.
+    The topics picked before the quiz can include ones the quiz never asked
+    about (a short quiz doesn't reach every topic), or ones where every
+    question was skipped."""
+    attempts = run_query(
         new_supabase_client(access_token)
         .table("quiz_attempts")
-        .select(ATTEMPT_SUMMARY_COLUMNS)
+        .select(ATTEMPT_DETAIL_COLUMNS)
         .eq("user_id", str(user.id))
         .order("created_at", desc=True)
         .limit(100),
         "load your quiz history",
-    )
-    return result.data
+    ).data
+    if not attempts:
+        return []
+
+    bank = run_query(
+        question_bank_client().table("questions").select("id, question, topic"),
+        "load your quiz history",
+    ).data
+    topic_by_id = {row["id"]: row["topic"] for row in bank}
+    topic_by_text = {row["question"]: row["topic"] for row in bank}
+
+    for attempt in attempts:
+        answered = set()
+        for answer in attempt.pop("answers") or []:
+            if not answer.get("selectedAnswer"):
+                continue  # skipped - not attempted
+            # Older attempts saved before question IDs existed: match by text
+            topic = topic_by_id.get(answer.get("question_id")) or topic_by_text.get(
+                answer.get("question")
+            )
+            if topic:
+                answered.add(topic)
+        # Keep the order the user picked them in; topics that were renamed
+        # since come last
+        attempt["topics"] = [t for t in attempt["topics"] if t in answered] + sorted(
+            answered - set(attempt["topics"])
+        )
+    return attempts
 
 
 @app.get("/quiz-attempts/{attempt_id}")
@@ -983,7 +1037,7 @@ def list_topics(
 QuestionStatus = Literal["pending", "active", "rejected"]
 ADMIN_QUESTION_COLUMNS = (
     "id, question, options, correct_index, topic, difficulty, status, "
-    "source, explanation, review_note, created_at, reviewed_at"
+    "source, explanation, review_note, created_at, reviewed_at, version"
 )
 
 
@@ -996,7 +1050,11 @@ class GenerateRequest(BaseModel):
 
 
 class QuestionUpdateRequest(BaseModel):
-    """Only the fields that are sent get changed."""
+    """Only the fields that are sent get changed.
+
+    expected_version is the question's version when the admin opened it
+    (optimistic locking, see migration 006)."""
+    expected_version: int = Field(ge=1)
     question: str | None = Field(default=None, min_length=5, max_length=500)
     options: list[str] | None = Field(default=None, min_length=2, max_length=6)
     correct_index: int | None = Field(default=None, ge=0, le=5)
@@ -1004,6 +1062,18 @@ class QuestionUpdateRequest(BaseModel):
     difficulty: Literal["Easy", "Medium", "Hard"] | None = None
     explanation: str | None = Field(default=None, max_length=1000)
     status: QuestionStatus | None = None
+
+
+class QuestionCreateRequest(BaseModel):
+    """A question typed in by an admin (not generated)."""
+    question: str = Field(min_length=5, max_length=500)
+    options: list[str] = Field(min_length=2, max_length=6)
+    correct_index: int = Field(ge=0, le=5)
+    topic: str = Field(min_length=2, max_length=60)
+    difficulty: Literal["Easy", "Medium", "Hard"]
+    explanation: str = Field(default="", max_length=1000)
+    # Written by an admin, so it can go live straight away
+    status: Literal["pending", "active"] = "active"
 
 
 def is_duplicate_question(error: APIError) -> bool:
@@ -1046,6 +1116,11 @@ def admin_list_questions(
         "questions": questions,
         "counts": counts,
         "topics": sorted({row["topic"] for row in all_rows}),
+        # Topics players can already see. A pending question in any other
+        # topic would add a new topic to the app when approved.
+        "live_topics": sorted(
+            {row["topic"] for row in all_rows if row["status"] == "active"}
+        ),
     }
 
 
@@ -1064,39 +1139,64 @@ def update_job(job_id: str, **fields) -> None:
         generation_jobs[job_id].update(fields)
 
 
-def run_generation_job(job_id: str, topic: str, data: GenerateRequest) -> None:
-    """Runs in the background: generate, check, save as 'pending'."""
+def run_generation_job(
+    job_id: str,
+    topic: str | None,
+    difficulty: str,
+    count: int,
+    guidance: str,
+    document: Document | None = None,
+) -> None:
+    """Runs in the background: generate, check, save as 'pending'.
+
+    topic=None (documents only) lets the AI pick each question's topic."""
     try:
-        # Every existing question in the topic (any status), so Gemini doesn't
-        # repeat one that's live, waiting for review, or already rejected.
-        existing = run_query(
-            question_bank_client()
-            .table("questions")
-            .select("question")
-            .eq("topic", topic),
+        rows = run_query(
+            question_bank_client().table("questions").select("question, topic, status"),
             "load existing questions",
         ).data
+        # Every existing question in the topic (any status), so Gemini doesn't
+        # repeat one that's live, waiting for review, or already rejected.
+        # Without a fixed topic, every question counts, newest first.
+        existing = [
+            row["question"] for row in reversed(rows)
+            if topic is None or row["topic"] == topic
+        ]
+        # Topics the AI should reuse instead of inventing near-duplicates
+        known_topics = sorted({row["topic"] for row in rows if row["status"] != "rejected"})
+        live_topics = {row["topic"] for row in rows if row["status"] == "active"}
 
         generated, skipped = generate_questions(
             topic,
-            data.difficulty,
-            data.count,
-            [row["question"] for row in existing],
-            data.guidance.strip(),
+            difficulty,
+            count,
+            existing,
+            guidance,
+            document=document,
+            known_topics=known_topics,
         )
 
         # Insert one at a time so a single duplicate doesn't lose the batch.
         created = 0
+        new_topics = set()
         for question in generated:
             try:
                 question_bank_client().table("questions").insert(question).execute()
                 created += 1
+                if question["topic"] not in live_topics:
+                    new_topics.add(question["topic"])
             except APIError as error:
                 if not is_duplicate_question(error):
                     raise
                 skipped.append(f"{question['question'][:80]}: already exists")
 
-        update_job(job_id, status="done", created=created, skipped=skipped)
+        update_job(
+            job_id,
+            status="done",
+            created=created,
+            skipped=skipped,
+            new_topics=sorted(new_topics),
+        )
     except GenerationError as error:
         update_job(job_id, status="failed", error=str(error))
     except Exception as error:
@@ -1109,14 +1209,14 @@ def run_generation_job(job_id: str, topic: str, data: GenerateRequest) -> None:
         )
 
 
-@app.post("/admin/generate", status_code=202)
-def admin_generate_questions(
-    data: GenerateRequest,
+def start_generation_job(
     background_tasks: BackgroundTasks,
-    admin=Depends(require_admin),
-):
-    """Start generating questions; returns a job id to poll."""
-    topic = " ".join(data.topic.split())  # tidy spacing: "  CPU  Sched " -> "CPU Sched"
+    topic: str | None,
+    difficulty: str,
+    count: int,
+    guidance: str,
+    document: Document | None = None,
+) -> str:
     job_id = uuid4().hex
 
     with generation_jobs_lock:
@@ -1126,14 +1226,119 @@ def admin_generate_questions(
         generation_jobs[job_id] = {
             "status": "running",
             "topic": topic,
-            "difficulty": data.difficulty,
-            "count": data.count,
+            "difficulty": difficulty,
+            "count": count,
+            "document": document.name if document else None,
             "created": 0,
             "skipped": [],
+            "new_topics": [],
             "error": None,
         }
 
-    background_tasks.add_task(run_generation_job, job_id, topic, data)
+    background_tasks.add_task(
+        run_generation_job, job_id, topic, difficulty, count, guidance, document
+    )
+    return job_id
+
+
+def tidy_topic(topic: str) -> str:
+    """Tidy spacing: "  CPU   Sched " -> "CPU Sched"."""
+    return " ".join(topic.split())
+
+
+@app.post("/admin/generate", status_code=202)
+def admin_generate_questions(
+    data: GenerateRequest,
+    background_tasks: BackgroundTasks,
+    admin=Depends(require_admin),
+):
+    """Start generating questions; returns a job id to poll."""
+    job_id = start_generation_job(
+        background_tasks,
+        tidy_topic(data.topic),
+        data.difficulty,
+        data.count,
+        data.guidance.strip(),
+    )
+    return {"job_id": job_id}
+
+
+# Questions from an uploaded document (lecture notes, a textbook chapter...).
+# PDFs go to Gemini as they are; .txt/.md/.docx are sent as their text.
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+DOCUMENT_TYPES = {".pdf", ".txt", ".md", ".docx"}
+
+
+def read_document(upload: UploadFile) -> Document:
+    name = Path(upload.filename or "document").name
+    extension = Path(name).suffix.lower()
+    if extension not in DOCUMENT_TYPES:
+        raise HTTPException(
+            status_code=415,
+            detail="Upload a PDF, Word (.docx), .txt or .md file.",
+        )
+
+    data = upload.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="The file is bigger than 10 MB.")
+    if not data:
+        raise HTTPException(status_code=400, detail="The file is empty.")
+
+    if extension == ".pdf":
+        if not data.startswith(b"%PDF"):
+            raise HTTPException(status_code=400, detail="This file isn't a valid PDF.")
+        return Document(name=name, pdf=data)
+
+    if extension == ".docx":
+        try:
+            import docx  # python-docx; imported here so it's only needed for uploads
+
+            word = docx.Document(io.BytesIO(data))
+        except Exception as error:
+            raise HTTPException(
+                status_code=400, detail="This Word file couldn't be read."
+            ) from error
+        lines = [paragraph.text for paragraph in word.paragraphs]
+        for table in word.tables:
+            for row in table.rows:
+                lines.append(" | ".join(cell.text for cell in row.cells))
+        text = "\n".join(line for line in lines if line.strip())
+    else:
+        text = data.decode("utf-8", errors="replace")
+
+    if len(text.strip()) < 200:
+        raise HTTPException(
+            status_code=400,
+            detail="The document has too little text to write questions from.",
+        )
+    return Document(name=name, text=text)
+
+
+@app.post("/admin/generate-from-document", status_code=202)
+def admin_generate_from_document(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    difficulty: Literal["Easy", "Medium", "Hard"] = Form(...),
+    count: int = Form(default=10, ge=1, le=15),
+    # Empty = let the AI find the topics in the document (new ones included)
+    topic: str = Form(default="", max_length=60),
+    guidance: str = Form(default="", max_length=300),
+    admin=Depends(require_admin),
+):
+    """Start writing questions from an uploaded document; returns a job id."""
+    document = read_document(file)
+    topic = tidy_topic(topic)
+    if topic and len(topic) < 2:
+        raise HTTPException(status_code=422, detail="The topic is too short.")
+
+    job_id = start_generation_job(
+        background_tasks,
+        topic or None,
+        difficulty,
+        count,
+        guidance.strip(),
+        document,
+    )
     return {"job_id": job_id}
 
 
@@ -1151,14 +1356,65 @@ def admin_generation_status(job_id: str, admin=Depends(require_admin)):
         return dict(job)
 
 
+@app.post("/admin/questions", status_code=201)
+def admin_create_question(
+    data: QuestionCreateRequest,
+    admin=Depends(require_admin),
+):
+    """Add one question written by hand."""
+    options = [option.strip() for option in data.options]
+    if any(not option for option in options):
+        raise HTTPException(status_code=400, detail="Options can't be empty")
+    if len({option.lower() for option in options}) != len(options):
+        raise HTTPException(status_code=400, detail="Options must all be different")
+    if not 0 <= data.correct_index < len(options):
+        raise HTTPException(status_code=400, detail="Pick which option is correct")
+
+    row = {
+        "question": " ".join(data.question.split()),
+        "options": options,
+        "correct_index": data.correct_index,
+        "topic": tidy_topic(data.topic),
+        "difficulty": data.difficulty,
+        "explanation": data.explanation.strip() or None,
+        "status": data.status,
+        "source": "manual",
+    }
+    if data.status == "active":
+        row["reviewed_at"] = datetime.now(timezone.utc).isoformat()
+
+    try:
+        result = question_bank_client().table("questions").insert(row).execute()
+    except APIError as error:
+        if is_duplicate_question(error):
+            raise HTTPException(
+                status_code=409,
+                detail="A question with exactly this text already exists.",
+            ) from error
+        print(f"Database error (create question): {error}", flush=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Could not save the question.",
+        ) from error
+
+    return result.data[0]
+
+
 @app.patch("/admin/questions/{question_id}")
 def admin_update_question(
     question_id: int,
     data: QuestionUpdateRequest,
     admin=Depends(require_admin),
 ):
-    """Edit a question and/or change its status (approve = 'active')."""
+    """Edit a question and/or change its status (approve = 'active').
+
+    Two admins can work on the same question at once. To stop the second
+    save silently overwriting the first, the update only applies if the
+    question is still at the version the admin opened (expected_version);
+    otherwise it answers 409 and the app reloads the question.
+    """
     changes = data.model_dump(exclude_unset=True)
+    expected_version = changes.pop("expected_version")
     if not changes:
         raise HTTPException(status_code=400, detail="Nothing to change")
 
@@ -1173,6 +1429,8 @@ def admin_update_question(
     if not rows:
         raise HTTPException(status_code=404, detail="Question not found")
     current = rows[0]
+    if current["version"] != expected_version:
+        raise edited_by_someone_else()
 
     # Tidy text fields
     for field in ("question", "topic"):
@@ -1200,11 +1458,18 @@ def admin_update_question(
         changes["review_note"] = None
 
     try:
+        # Compare-and-set in ONE statement:
+        #   UPDATE questions SET ... WHERE id = :id AND version = :expected
+        # Postgres locks the row while it checks and writes, so if another
+        # admin's save lands first (between our read above and this write),
+        # their trigger has already bumped the version, nothing matches here,
+        # and no row is changed.
         result = (
             question_bank_client()
             .table("questions")
             .update(changes)
             .eq("id", question_id)
+            .eq("version", expected_version)
             .execute()
         )
     except APIError as error:
@@ -1219,4 +1484,14 @@ def admin_update_question(
             detail="Could not save the question.",
         ) from error
 
+    if not result.data:
+        raise edited_by_someone_else()
     return result.data[0]
+
+
+def edited_by_someone_else() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail="Another admin changed this question while you had it open. "
+               "Reload to see their version, then try again.",
+    )

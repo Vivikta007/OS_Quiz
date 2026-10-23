@@ -1,6 +1,6 @@
 import { router } from "expo-router";
 import { useState } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { Pressable, View } from "react-native";
 
 import { showAlert } from "@/lib/alert";
 import { apiRequest } from "@/lib/api";
@@ -8,9 +8,11 @@ import { saveSession } from "@/lib/auth";
 import { AppText } from "@/ui/AppText";
 import { AuthHeader, LinkRow } from "@/ui/Auth";
 import { Button } from "@/ui/Button";
+import { Reveal } from "@/ui/Reveal";
 import { Screen } from "@/ui/Screen";
 import { TextField } from "@/ui/TextField";
-import { colors, layout, spacing } from "@/ui/theme";
+import { fonts, layout, spacing } from "@/ui/theme";
+import { createStyles } from "@/ui/ThemeProvider";
 
 // Hidden until custom SMTP is set up in Supabase: the built-in email
 // sender only reaches the project's team, and its Reset Password template
@@ -19,6 +21,7 @@ import { colors, layout, spacing } from "@/ui/theme";
 const SHOW_FORGOT_PASSWORD = false;
 
 export default function LoginScreen() {
+  const styles = useStyles();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -64,9 +67,9 @@ export default function LoginScreen() {
   return (
     <Screen scroll keyboard>
       <View style={styles.content}>
-        <AuthHeader subtitle="Sign in to continue learning" />
+        <AuthHeader />
 
-        <View style={styles.form}>
+        <Reveal order={3} style={styles.form}>
           <TextField
             label="Email"
             placeholder="you@example.com"
@@ -108,7 +111,6 @@ export default function LoginScreen() {
 
           <Button
             title="Log in"
-            trailingIcon="arrow-forward"
             loading={loading}
             onPress={handleLogin}
             style={styles.submit}
@@ -120,13 +122,13 @@ export default function LoginScreen() {
             onPress={() => router.push("/register")}
             disabled={loading}
           />
-        </View>
+        </Reveal>
       </View>
     </Screen>
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = createStyles((colors) => ({
   content: {
     flex: 1,
     justifyContent: "center",
@@ -141,9 +143,9 @@ const styles = StyleSheet.create({
   },
   forgotText: {
     color: colors.accentText,
-    fontWeight: "600",
+    fontFamily: fonts.bodySemiBold,
   },
   submit: {
     marginTop: spacing.sm,
   },
-});
+}));
